@@ -1,21 +1,35 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-python-multipart==0.0.20
-pydantic-settings==2.7.1
+# API and configuration
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic-settings
+python-dotenv
+httpx
+tenacity
 
-streamlit==1.41.1
+# Background document processing and progress reporting
+celery[redis]
+redis
 
-neo4j==5.27.0
-graphiti-core==0.17.1
-SQLAlchemy[asyncio]==2.0.37
-asyncpg==0.30.0
-alembic==1.14.1
-psycopg[binary]==3.2.3
+# Document parsing and image handling
+docling
+Pillow
 
-PyMuPDF==1.25.1
-Pillow==11.1.0
+# PostgreSQL metadata, file storage, and vector search
+SQLAlchemy[asyncio]
+asyncpg
+psycopg[binary]
+alembic
+pgvector
 
-httpx==0.28.1
-tenacity==9.0.0
-python-dotenv==1.0.1
-sentence-transformers==3.3.1
+# Neo4j graph and Graphiti
+neo4j
+graphiti-core
+
+# multilingual-e5-large embeddings
+sentence-transformers
+
+# Pipeline and API tests
+pytest
+pytest-asyncio
+asgi-lifespan
