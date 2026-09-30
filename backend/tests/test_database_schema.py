@@ -24,6 +24,8 @@ def test_ingestion_job_has_bounded_status_and_progress() -> None:
     assert any(
         "queued" in str(check.sqltext)
         and "processing" in str(check.sqltext)
+        and "awaiting_persistence" in str(check.sqltext)
+        and "awaiting_extraction" not in str(check.sqltext)
         and "completed" in str(check.sqltext)
         and "failed" in str(check.sqltext)
         for check in table.constraints
@@ -34,6 +36,7 @@ def test_ingestion_job_has_bounded_status_and_progress() -> None:
         for check in table.constraints
         if hasattr(check, "sqltext")
     )
+    assert {"token_budget_limit", "tokens_consumed"} <= set(table.columns.keys())
 
 
 def test_chunks_have_e5_vectors_and_search_indexes() -> None:

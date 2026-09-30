@@ -70,7 +70,7 @@ class IngestionJob(Base):
     __tablename__ = "ingestion_jobs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued', 'processing', 'completed', 'failed')",
+            "status IN ('queued', 'processing', 'awaiting_persistence', 'completed', 'failed')",
             name="ck_ingestion_jobs_status",
         ),
         CheckConstraint(
@@ -78,6 +78,13 @@ class IngestionJob(Base):
             name="ck_ingestion_jobs_progress_range",
         ),
         CheckConstraint("attempt >= 0", name="ck_ingestion_jobs_attempt_nonnegative"),
+        CheckConstraint(
+            "token_budget_limit > 0", name="ck_ingestion_jobs_token_budget_positive"
+        ),
+        CheckConstraint(
+            "tokens_consumed >= 0",
+            name="ck_ingestion_jobs_tokens_consumed_nonnegative",
+        ),
         Index("ix_ingestion_jobs_status_created_at", "status", "created_at"),
     )
 
@@ -102,6 +109,16 @@ class IngestionJob(Base):
     celery_task_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     error_code: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)
+    extracted_text: Mapped[str | None] = mapped_column(Text)
+    document_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    image_descriptions: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    extraction_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    token_budget_limit: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1000000")
+    )
+    tokens_consumed: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

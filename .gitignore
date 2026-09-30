@@ -2,7 +2,7 @@
 .venv/
 venv/
 env/
-
+.env/
 # Python cache and build artifacts
 __pycache__/
 *.py[cod]
@@ -13,6 +13,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+node_modules/
+frontend/dist/
 
 # Environment and local configuration
 .env

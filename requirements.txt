@@ -17,17 +17,10 @@ Pillow
 
 # PostgreSQL metadata, file storage, and vector search
 SQLAlchemy[asyncio]
-asyncpg
 psycopg[binary]
 alembic
 pgvector
-
-# Neo4j graph and Graphiti
 neo4j
-graphiti-core
-
-# multilingual-e5-large embeddings
-sentence-transformers
 
 # Pipeline and API tests
 pytest

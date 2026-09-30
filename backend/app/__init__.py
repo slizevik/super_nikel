@@ -1,0 +1,1 @@
+"""Nikelpower backend application."""
