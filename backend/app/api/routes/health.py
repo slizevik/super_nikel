@@ -1,3 +1,4 @@
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from redis import Redis
 from sqlalchemy import text
@@ -9,6 +10,7 @@ from app.schemas.documents import HealthResponse
 
 
 router = APIRouter(tags=["health"])
+logger = structlog.get_logger(__name__)
 
 
 @router.get("/health/live")
@@ -22,14 +24,22 @@ def readiness(session: Session = Depends(get_db)) -> HealthResponse:
     try:
         session.execute(text("SELECT 1"))
         services["postgres"] = "ok"
-    except Exception:
+    except Exception as error:
+        logger.exception(
+            "postgres_readiness_check_failed",
+            error_type=type(error).__name__,
+        )
         services["postgres"] = "unavailable"
 
     client = Redis.from_url(get_settings().redis_url, socket_timeout=2)
     try:
         client.ping()
         services["redis"] = "ok"
-    except Exception:
+    except Exception as error:
+        logger.exception(
+            "redis_readiness_check_failed",
+            error_type=type(error).__name__,
+        )
         services["redis"] = "unavailable"
     finally:
         client.close()

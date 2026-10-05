@@ -1,0 +1,6 @@
+- Использовать ТОЛЬКО Redis Streams (НЕ pub/sub, НЕ lists)
+- Все сообщения — JSON, валидированный через Pydantic
+- Consumer groups для каждого воркера (гарантирует обработку одним инстансом)
+- XACK после успешной обработки
+- Failed messages → отдельный стрим `{stream_name}:failed`
+- XREADGROUP с блокировкой (block=5000) для polling

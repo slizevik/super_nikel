@@ -1,6 +1,13 @@
 from celery import Celery
+from celery.signals import setup_logging
 
 from app.core.config import get_settings
+from app.core.logging import configure_logging
+
+
+@setup_logging.connect
+def configure_celery_logging(**_kwargs) -> None:
+    configure_logging("worker")
 
 
 settings = get_settings()

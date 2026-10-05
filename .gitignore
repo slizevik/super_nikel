@@ -26,6 +26,9 @@ data/uploads/*
 data/processed/*
 data/tmp/*
 !.gitkeep
+logs/*
+!logs/.gitkeep
+!logs/README.md
 
 # IDE and OS files
 .vscode/

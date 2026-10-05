@@ -1,9 +1,9 @@
 import hashlib
-import logging
 from pathlib import PurePath
 from urllib.parse import quote
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -24,7 +24,7 @@ from app.tasks import parse_pdf_document
 router = APIRouter(prefix="/documents", tags=["documents"])
 PDF_SIGNATURE = b"%PDF-"
 UPLOAD_CHUNK_BYTES = 1024 * 1024
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def read_pdf_upload(file: UploadFile) -> tuple[str, bytes]:
@@ -100,7 +100,11 @@ async def upload_document(
             task_id=str(job.id),
         )
     except Exception as error:
-        logger.exception("Could not enqueue PDF ingestion job %s", job.id)
+        logger.exception(
+            "could_not_enqueue_pdf_ingestion_job",
+            job_id=str(job.id),
+            document_id=str(document.id),
+        )
         session.rollback()
         job.status = "failed"
         job.current_step = "worker_enqueue_failed"

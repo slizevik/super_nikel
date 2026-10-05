@@ -1,7 +1,7 @@
-import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
+import structlog
 from celery import shared_task
 
 from app.core.config import get_settings
@@ -23,7 +23,7 @@ from app.services.llm.factory import create_llm_provider
 from app.services.pdf_parser import DoclingParsingError, ParsedDocument, parse_pdf
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class PipelineFailure(RuntimeError):
@@ -100,7 +100,10 @@ def _describe_images(
                 f"Could not analyze {image.image_id}: {error}",
             ) from error
         except Exception as error:
-            logger.exception("Unexpected image analysis error for %s", image.image_id)
+            logger.exception(
+                "unexpected_image_analysis_error",
+                image_id=image.image_id,
+            )
             raise PipelineFailure(
                 "IMAGE_DESCRIPTION_FAILED",
                 PipelineStep.IMAGE_ERROR,
@@ -147,7 +150,7 @@ def _extract_entities(
             str(error),
         ) from error
     except Exception as error:
-        logger.exception("Unexpected entity extraction error")
+        logger.exception("unexpected_entity_extraction_error")
         raise PipelineFailure(
             "ENTITY_EXTRACTION_FAILED",
             PipelineStep.EXTRACTION_ERROR,
@@ -179,27 +182,20 @@ def _validate_extraction(
 def parse_pdf_document(document_id: str, job_id: str) -> None:
     document_uuid = UUID(document_id)
     job_uuid = UUID(job_id)
+    task_logger = logger.bind(document_id=document_id, job_id=job_id)
 
     with SessionLocal() as session:
         job = session.get(IngestionJob, job_uuid)
         document = session.get(Document, document_uuid)
         if job is None or document is None:
-            logger.error(
-                "Cannot process ingestion job %s for document %s: record not found",
-                job_id,
-                document_id,
-            )
+            task_logger.error("ingestion_records_not_found")
             return
         if job.status in {
             IngestionStatus.AWAITING_PERSISTENCE.value,
             IngestionStatus.COMPLETED.value,
             IngestionStatus.FAILED.value,
         }:
-            logger.info(
-                "Skipping already-finished ingestion job %s with status %s",
-                job_id,
-                job.status,
-            )
+            task_logger.info("skipping_finished_ingestion_job", status=job.status)
             return
 
         if job.status == IngestionStatus.QUEUED.value:
@@ -212,6 +208,7 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
         job.error_code = None
         job.error_message = None
         session.commit()
+        task_logger.info("ingestion_job_started", attempt=job.attempt)
 
         try:
             parsed_document = _parse_document(document.original_file)
@@ -275,11 +272,10 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
                     error.step,
                     str(error),
                 )
-            logger.error(
-                "Document ingestion job %s failed at %s: %s",
-                job_id,
-                error.step.value,
-                error,
+            task_logger.error(
+                "document_ingestion_failed",
+                step=error.step.value,
+                error_code=error.code,
             )
             raise
         except Exception as error:
@@ -293,5 +289,12 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
                     PipelineStep.PIPELINE_ERROR,
                     "An unexpected error occurred during document processing.",
                 )
-            logger.exception("Document ingestion job %s failed unexpectedly", job_id)
+            task_logger.exception("document_ingestion_failed_unexpectedly")
             raise
+        else:
+            task_logger.info(
+                "document_extraction_completed",
+                status=job.status,
+                entities_count=len(job.extraction_result["entities"]),
+                relationships_count=len(job.extraction_result["relationships"]),
+            )

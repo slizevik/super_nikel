@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -49,6 +50,10 @@ class Settings(BaseSettings):
     analyze_document_images: bool = True
     max_upload_size_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
     cors_origins: list[str] = ["http://localhost:5173"]
+    log_dir: str = "./logs"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    log_backup_count: int = Field(default=5, ge=0)
 
 
 @lru_cache
