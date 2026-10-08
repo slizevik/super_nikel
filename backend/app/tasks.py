@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -20,6 +21,10 @@ from app.services.llm.base import (
 )
 from app.services.llm.budget import TokenBudget
 from app.services.llm.factory import create_llm_provider
+from app.services.parsed_document_storage import (
+    save_model_response,
+    save_parsed_markdown,
+)
 from app.services.pdf_parser import DoclingParsingError, ParsedDocument, parse_pdf
 
 
@@ -124,10 +129,13 @@ def _extract_entities(
     provider: LLMProvider,
     parsed_document: ParsedDocument,
     image_descriptions: list[ImageDescription],
+    on_raw_response: Callable[[str], None] | None = None,
 ) -> ExtractionResult:
     try:
         extracted = provider.extract_entities(
-            parsed_document.markdown, image_descriptions
+            parsed_document.markdown,
+            image_descriptions,
+            on_raw_response=on_raw_response,
         )
     except LLMConfigurationError:
         raise
@@ -148,6 +156,12 @@ def _extract_entities(
             "ENTITY_EXTRACTION_FAILED",
             PipelineStep.EXTRACTION_ERROR,
             str(error),
+        ) from error
+    except OSError as error:
+        raise PipelineFailure(
+            "MODEL_RESPONSE_SAVE_FAILED",
+            PipelineStep.MODEL_RESPONSE_SAVE_ERROR,
+            "Could not save the raw LLM extraction response.",
         ) from error
     except Exception as error:
         logger.exception("unexpected_entity_extraction_error")
@@ -212,6 +226,23 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
 
         try:
             parsed_document = _parse_document(document.original_file)
+            try:
+                parsed_markdown_path = save_parsed_markdown(
+                    parsed_document.markdown,
+                    document_uuid,
+                    get_settings().parsed_documents_dir,
+                )
+            except OSError as error:
+                raise PipelineFailure(
+                    "PARSED_DOCUMENT_SAVE_FAILED",
+                    PipelineStep.PARSED_DOCUMENT_SAVE_ERROR,
+                    "Could not save the Docling Markdown output.",
+                ) from error
+            task_logger.info(
+                "parsed_markdown_saved",
+                path=str(parsed_markdown_path),
+                character_count=len(parsed_document.markdown),
+            )
             job.extracted_text = parsed_document.markdown
             job.document_manifest = parsed_document.manifest
             _set_step(job, PipelineStep.DESCRIBING_IMAGES, 35)
@@ -248,7 +279,14 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
             session.commit()
 
             extracted = _extract_entities(
-                provider, parsed_document, image_descriptions
+                provider,
+                parsed_document,
+                image_descriptions,
+                on_raw_response=lambda response: save_model_response(
+                    response,
+                    document_uuid,
+                    get_settings().parsed_documents_dir,
+                ),
             )
             _set_step(job, PipelineStep.VALIDATING_EXTRACTION, 80)
             session.commit()

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 from app.schemas.extraction import ExtractionResult, ImageDescription
 
@@ -43,5 +43,8 @@ class LLMProvider(Protocol):
     ) -> ImageDescription: ...
 
     def extract_entities(
-        self, document_text: str, image_descriptions: list[ImageDescription]
+        self,
+        document_text: str,
+        image_descriptions: list[ImageDescription],
+        on_raw_response: Callable[[str], None] | None = None,
     ) -> ExtractionResult: ...

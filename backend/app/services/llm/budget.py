@@ -12,7 +12,7 @@ class TokenReservation:
 
 class TokenBudget:
     MAX_IMAGE_RESPONSE_TOKENS = 1024
-    MAX_EXTRACTION_RESPONSE_TOKENS = 8192
+    MAX_EXTRACTION_RESPONSE_TOKENS = 32768
     MIN_RESPONSE_TOKENS = 128
 
     def __init__(

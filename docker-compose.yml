@@ -18,7 +18,7 @@ x-backend-environment: &backend-environment
   LLM_PROVIDER: ${LLM_PROVIDER:-yandex}
   YANDEX_CLOUD_FOLDER: ${YANDEX_CLOUD_FOLDER:-}
   YANDEX_CLOUD_API_KEY: ${YANDEX_CLOUD_API_KEY:-}
-  YANDEX_CLOUD_MODEL: ${YANDEX_CLOUD_MODEL:-yandexgpt/latest}
+  YANDEX_CLOUD_MODEL: ${YANDEX_CLOUD_MODEL:-gpt://b1ghh2ufu3o0t33psog1/deepseek-v4.1-flash/latest}
   YANDEX_EMBEDDING_MODEL: ${YANDEX_EMBEDDING_MODEL:-emb/latest}
   YANDEX_CLOUD_BASE_URL: ${YANDEX_CLOUD_BASE_URL:-https://ai.api.cloud.yandex.net/v1}
   YANDEX_VISION_MODEL: ${YANDEX_VISION_MODEL:-}
@@ -30,6 +30,7 @@ x-backend-environment: &backend-environment
   ENTITY_MIN_OCCURRENCES: ${ENTITY_MIN_OCCURRENCES:-2}
   DOCUMENTS_DIR: ${DOCUMENTS_DIR:-./data/documents}
   INGESTION_STATE_DIR: ${INGESTION_STATE_DIR:-./data/ingestion}
+  PARSED_DOCUMENTS_DIR: ${PARSED_DOCUMENTS_DIR:-./data/processed}
   CHUNK_TARGET_TOKENS: ${CHUNK_TARGET_TOKENS:-850}
   CHUNK_MAX_TOKENS: ${CHUNK_MAX_TOKENS:-1000}
   CHUNK_OVERLAP_PARAGRAPHS: ${CHUNK_OVERLAP_PARAGRAPHS:-1}
@@ -178,6 +179,7 @@ services:
     volumes:
       - docling_cache:/root/.cache
       - ./logs:/app/logs
+      - ./data/processed:/app/backend/data/processed
     command:
       - celery
       - -A

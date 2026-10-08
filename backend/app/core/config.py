@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     llm_provider: str = "yandex"
     yandex_cloud_folder: str | None = None
     yandex_cloud_api_key: str | None = None
-    yandex_cloud_model: str = "yandexgpt/latest"
+    yandex_cloud_model: str = (
+        "gpt://b1ghh2ufu3o0t33psog1/deepseek-v4.1-flash/latest"
+    )
     yandex_vision_model: str | None = None
     yandex_cloud_base_url: str = "https://llm.api.cloud.yandex.net/v1"
     llm_request_timeout_seconds: float = Field(default=120, gt=0)
@@ -44,6 +46,7 @@ class Settings(BaseSettings):
     neo4j_pagecache: str = "2G"
     documents_dir: str = "./data/documents"
     ingestion_state_dir: str = "./data/ingestion"
+    parsed_documents_dir: str = "./data/processed"
     libreoffice_binary: str = "libreoffice"
     libreoffice_timeout_sec: int = Field(default=180, gt=0)
     converted_pdf_dir: str = "./data/ingestion/converted"

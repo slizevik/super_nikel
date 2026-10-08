@@ -21,6 +21,11 @@ worker. The API accepts PDF uploads and stores metadata and file bytes in
 PostgreSQL. The worker parses documents, calls the configured LLM provider, and
 validates extraction output. Successful extraction stops at
 `awaiting_persistence`; it is not yet a completed graph-ingestion flow.
+Docling's Markdown output is also written atomically to
+`data/processed/<document_id>.md` by the worker and is available on the host
+through a Docker bind mount. The raw entity-extraction response is saved beside
+it as `<document_id>.llm-response.txt` before schema validation; response bodies
+are not written to application logs.
 
 The API and worker emit structured JSON logs to stdout and to separate rotating
 files under `logs/`. HTTP requests carry a generated `X-Request-ID`; worker

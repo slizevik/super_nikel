@@ -1,8 +1,10 @@
 import base64
 import json
 import re
+from collections.abc import Callable
 
 import httpx
+import structlog
 from pydantic import ValidationError
 
 from app.core.config import Settings
@@ -41,6 +43,12 @@ document. Return one JSON object with exactly these keys:
     {"text": "entity text", "context": "verbatim surrounding context"}
   ]
 }
+Always include all three top-level keys: "entities", "relationships", and
+"unclassified_entities". Use an empty array when a category has no entries.
+Never return an empty object ({}). If no typed entities or relationships can be
+supported by the document, return empty arrays and put relevant unclassified
+terms in "unclassified_entities"; use three empty arrays only when nothing
+relevant is present in the document.
 Use at most 5 entities of each type and 10 relationships. Entity IDs must be
 unique and every relationship endpoint must reference an entity in this JSON.
 Use only the listed types and relationship direction:
@@ -65,6 +73,8 @@ image is useful for understanding the document; if not, set useful=false and
 say so. Do not infer unreadable values. Return JSON only with keys:
 image_id, kind, useful, description, key_information, caption.
 """
+
+logger = structlog.get_logger(__name__)
 
 
 class YandexGPTProvider:
@@ -106,6 +116,7 @@ class YandexGPTProvider:
         ]
         response, _reservation = self._chat_completion(
             model=self._vision_model,
+            operation="image_description",
             messages=[{"role": "user", "content": content}],
             estimated_input_tokens=(
                 TokenBudget.estimate_text_tokens(content[0]["text"])
@@ -124,8 +135,16 @@ class YandexGPTProvider:
             ) from error
 
     def extract_entities(
-        self, document_text: str, image_descriptions: list[ImageDescription]
+        self,
+        document_text: str,
+        image_descriptions: list[ImageDescription],
+        on_raw_response: Callable[[str], None] | None = None,
     ) -> ExtractionResult:
+        if not document_text.strip():
+            raise LLMResponseError(
+                "Entity extraction requires non-empty document text."
+            )
+
         descriptions = [
             description.model_dump(mode="json") for description in image_descriptions
         ]
@@ -139,6 +158,7 @@ class YandexGPTProvider:
         )
         response, _reservation = self._chat_completion(
             model=self._text_model,
+            operation="entity_extraction",
             messages=[
                 {"role": "system", "content": ENTITY_EXTRACTION_INSTRUCTIONS},
                 {"role": "user", "content": user_content},
@@ -148,7 +168,11 @@ class YandexGPTProvider:
             ),
             preferred_response_tokens=TokenBudget.MAX_EXTRACTION_RESPONSE_TOKENS,
         )
-        payload = self._normalize_extraction_payload(self._parse_json_response(response))
+        if on_raw_response is not None:
+            on_raw_response(response)
+        payload = self._normalize_extraction_payload(
+            self._parse_json_response(response)
+        )
         try:
             return ExtractionResult.model_validate(payload)
         except ValidationError as error:
@@ -164,6 +188,7 @@ class YandexGPTProvider:
     def _chat_completion(
         self,
         model: str,
+        operation: str,
         messages: list[dict],
         estimated_input_tokens: int,
         preferred_response_tokens: int,
@@ -215,11 +240,35 @@ class YandexGPTProvider:
             usage = response_body.get("usage")
             actual_tokens = self._actual_total_tokens(usage)
             self._token_budget.reconcile(reservation, actual_tokens)
-            content = response_body["choices"][0]["message"]["content"]
+            choice = response_body["choices"][0]
+            message = choice["message"]
+            content = message["content"]
+            refusal = message.get("refusal")
+            finish_reason = choice.get("finish_reason")
+            response_diagnostics = {
+                "operation": operation,
+                "finish_reason": (
+                    finish_reason[:64] if isinstance(finish_reason, str) else None
+                ),
+                "refusal_present": bool(refusal),
+                "content_type": _safe_type_name(content),
+                "content_shape": _safe_value_shape(content),
+                "usage": _safe_usage(usage),
+            }
             if not isinstance(content, str):
+                logger.warning(
+                    "yandex_chat_completion_content_type_unexpected",
+                    **response_diagnostics,
+                )
                 raise LLMResponseError(
                     "Yandex GPT response content must be a string."
                 )
+
+            logger.info(
+                "yandex_chat_completion_received",
+                **response_diagnostics,
+                content_length=len(content),
+            )
             return content, reservation
         except LLMResponseError:
             raise
@@ -285,7 +334,69 @@ class YandexGPTProvider:
             if "entities" in nested and "relationships" in nested:
                 return nested
 
+        nested_shapes = {}
+        for key in ("result", "data", "output"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                nested_shapes[key] = _safe_payload_shape(value)
+                nested_value = value.get("data")
+                if isinstance(nested_value, dict):
+                    nested_shapes[f"{key}.data"] = _safe_payload_shape(nested_value)
+
+        logger.warning(
+            "yandex_extraction_payload_missing",
+            response_shape=_safe_payload_shape(payload),
+            nested_response_fields=nested_shapes,
+        )
         raise LLMResponseError(
             "Yandex GPT response did not contain the required extraction payload: "
             "expected an object with 'entities' and 'relationships'."
         )
+
+
+def _safe_payload_shape(value: dict) -> dict[str, object]:
+    known_fields = {
+        "entities",
+        "relationships",
+        "unclassified_entities",
+        "result",
+        "data",
+        "output",
+    }
+    present_fields = {key for key in value if isinstance(key, str)}
+    return {
+        "recognized_fields": sorted(present_fields & known_fields),
+        "additional_field_count": sum(key not in known_fields for key in value),
+    }
+
+
+def _safe_type_name(value: object) -> str:
+    return type(value).__name__
+
+
+def _safe_value_shape(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return _safe_payload_shape(value)
+    if isinstance(value, list):
+        element_type_counts: dict[str, int] = {}
+        for element in value:
+            element_type = _safe_type_name(element)
+            element_type_counts[element_type] = element_type_counts.get(element_type, 0) + 1
+        return {
+            "length": len(value),
+            "element_type_counts": element_type_counts,
+        }
+    if isinstance(value, str):
+        return {"length": len(value)}
+    return {}
+
+
+def _safe_usage(usage: object) -> dict[str, int] | None:
+    if not isinstance(usage, dict):
+        return None
+    return {
+        key: value
+        for key, value in usage.items()
+        if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
+        and isinstance(value, int)
+    }

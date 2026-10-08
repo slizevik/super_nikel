@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -48,6 +49,7 @@ class FakeSession:
 class MockLLMProvider:
     def __init__(self) -> None:
         self.images: list[str] = []
+        self.raw_responses: list[str] = []
 
     def describe_image(self, image, _document_context):
         self.images.append(image.image_id)
@@ -60,9 +62,14 @@ class MockLLMProvider:
             caption=image.caption,
         )
 
-    def extract_entities(self, _document_text, image_descriptions):
+    def extract_entities(
+        self,
+        _document_text,
+        image_descriptions,
+        on_raw_response=None,
+    ):
         assert len(image_descriptions) == len(self.images)
-        return ExtractionResult(
+        result = ExtractionResult(
             entities=[
                 ExtractedEntity(
                     id="process-1",
@@ -94,9 +101,14 @@ class MockLLMProvider:
                 }
             ],
         )
+        if on_raw_response is not None:
+            raw_response = result.model_dump_json()
+            self.raw_responses.append(raw_response)
+            on_raw_response(raw_response)
+        return result
 
 
-def setup_task_session(monkeypatch, parsed_document=None):
+def setup_task_session(monkeypatch, parsed_output_dir: Path, parsed_document=None):
     document = SimpleNamespace(original_file=b"%PDF-1.7")
     job = SimpleNamespace(
         status=IngestionStatus.QUEUED.value,
@@ -117,6 +129,13 @@ def setup_task_session(monkeypatch, parsed_document=None):
     session = FakeSession(document, job)
     monkeypatch.setattr("app.tasks.SessionLocal", lambda: session)
     monkeypatch.setattr(
+        "app.tasks.get_settings",
+        lambda: SimpleNamespace(
+            analyze_document_images=True,
+            parsed_documents_dir=str(parsed_output_dir),
+        ),
+    )
+    monkeypatch.setattr(
         "app.tasks._parse_document",
         lambda _pdf_bytes: parsed_document
         or ParsedDocument(
@@ -132,17 +151,27 @@ def setup_task_session(monkeypatch, parsed_document=None):
     return session, job
 
 
-def test_pipeline_uses_mock_provider_and_stops_before_persistence(monkeypatch) -> None:
-    session, job = setup_task_session(monkeypatch)
+def test_pipeline_saves_docling_markdown_and_stops_before_persistence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    session, job = setup_task_session(monkeypatch, tmp_path)
     provider = MockLLMProvider()
     monkeypatch.setattr("app.tasks.get_llm_provider", lambda _budget: provider)
+    document_id = uuid4()
 
-    parse_pdf_document.run(str(uuid4()), str(uuid4()))
+    parse_pdf_document.run(str(document_id), str(uuid4()))
 
     assert job.status == IngestionStatus.AWAITING_PERSISTENCE.value
     assert job.current_step == "awaiting_persistence"
     assert job.progress_percent == 90
     assert job.extracted_text.startswith("# Nickel leaching")
+    assert (tmp_path / f"{document_id}.md").read_text(encoding="utf-8") == (
+        job.extracted_text
+    )
+    assert (
+        tmp_path / f"{document_id}.llm-response.txt"
+    ).read_text(encoding="utf-8") == provider.raw_responses[0]
     assert job.document_manifest["page_count"] == 1
     assert len(job.extraction_result["entities"]) == 2
     assert job.extraction_result["unclassified_entities"][0]["text"] == "heap"
@@ -150,7 +179,10 @@ def test_pipeline_uses_mock_provider_and_stops_before_persistence(monkeypatch) -
     assert session.commits == 5
 
 
-def test_pipeline_describes_docling_images_before_entity_extraction(monkeypatch) -> None:
+def test_pipeline_describes_docling_images_before_entity_extraction(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     from app.services.pdf_parser import ParsedImage
 
     parsed = ParsedDocument(
@@ -177,7 +209,7 @@ def test_pipeline_describes_docling_images_before_entity_extraction(monkeypatch)
             "images": [{"image_id": "image-0001", "caption": "Recovery chart"}],
         },
     )
-    session, job = setup_task_session(monkeypatch, parsed)
+    session, job = setup_task_session(monkeypatch, tmp_path, parsed)
     provider = MockLLMProvider()
     monkeypatch.setattr("app.tasks.get_llm_provider", lambda _budget: provider)
 
@@ -189,8 +221,11 @@ def test_pipeline_describes_docling_images_before_entity_extraction(monkeypatch)
     assert session.commits == 5
 
 
-def test_missing_yandex_credentials_fails_job_explicitly(monkeypatch) -> None:
-    session, job = setup_task_session(monkeypatch)
+def test_missing_yandex_credentials_fails_job_explicitly(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    session, job = setup_task_session(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "app.tasks.get_llm_provider",
         lambda _budget: (_ for _ in ()).throw(
@@ -211,8 +246,11 @@ def test_missing_yandex_credentials_fails_job_explicitly(monkeypatch) -> None:
     assert session.commits == 3
 
 
-def test_docling_failure_is_reported_at_parsing_step(monkeypatch) -> None:
-    session, job = setup_task_session(monkeypatch)
+def test_docling_failure_is_reported_at_parsing_step(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    session, job = setup_task_session(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
         "app.tasks._parse_document",
@@ -238,3 +276,49 @@ def test_docling_failure_is_reported_at_parsing_step(monkeypatch) -> None:
     assert job.current_step == "pdf_parsing_failed"
     assert job.error_code == "PDF_PARSING_FAILED"
     assert session.commits == 2
+
+
+def test_markdown_save_failure_fails_job_explicitly(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    session, job = setup_task_session(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "app.tasks.save_parsed_markdown",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("storage is unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.tasks.get_llm_provider",
+        lambda _budget: pytest.fail("LLM must not run if Markdown save fails"),
+    )
+
+    with pytest.raises(PipelineFailure, match="Could not save the Docling Markdown"):
+        parse_pdf_document.run(str(uuid4()), str(uuid4()))
+
+    assert job.status == IngestionStatus.FAILED.value
+    assert job.current_step == "parsed_document_save_failed"
+    assert job.error_code == "PARSED_DOCUMENT_SAVE_FAILED"
+
+
+def test_raw_model_response_save_failure_fails_job_explicitly(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    session, job = setup_task_session(monkeypatch, tmp_path)
+    provider = MockLLMProvider()
+    monkeypatch.setattr("app.tasks.get_llm_provider", lambda _budget: provider)
+    monkeypatch.setattr(
+        "app.tasks.save_model_response",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("storage is unavailable")
+        ),
+    )
+
+    with pytest.raises(PipelineFailure, match="Could not save the raw LLM"):
+        parse_pdf_document.run(str(uuid4()), str(uuid4()))
+
+    assert job.status == IngestionStatus.FAILED.value
+    assert job.current_step == "model_response_save_failed"
+    assert job.error_code == "MODEL_RESPONSE_SAVE_FAILED"
