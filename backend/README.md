@@ -61,8 +61,10 @@ metadata and extracted text. Download the original file from
 `GET /api/v1/documents`.
 
 The worker extracts Markdown, images, captions, and a manifest using Docling.
-It then calls the configured LLM provider to describe images and extract
-ontology entities. Yandex Cloud is the default provider. Until
+Picture objects without exportable image data are recorded in the manifest and
+skipped with a warning; they do not prevent text extraction or processing of
+other pictures. It then calls the configured LLM provider to describe available
+images and extract ontology entities. Yandex Cloud is the default provider. Until
 `YANDEX_CLOUD_API_KEY` and `YANDEX_CLOUD_FOLDER` are configured in `.env`, jobs
 fail explicitly with `LLM_CREDENTIALS_MISSING`; they are never reported as
 success. Configure models and endpoint with `YANDEX_CLOUD_MODEL`,

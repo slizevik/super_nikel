@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str | None = None
+    neo4j_database: str = "neo4j"
     neo4j_heap: str = "2G"
     neo4j_pagecache: str = "2G"
     documents_dir: str = "./data/documents"

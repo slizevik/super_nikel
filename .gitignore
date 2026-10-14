@@ -23,6 +23,7 @@ frontend/dist/
 
 # Local data and temporary files
 data/uploads/*
+data/ingestion/converted/*
 data/processed/*
 data/tmp/*
 !.gitkeep

@@ -1,6 +1,11 @@
+from typing import Self
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.db.ontology import EntityType, RelationshipType, validate_relationship
+
+
+MAX_ENTITIES_PER_DOCUMENT = 15
 
 
 class StrictSchema(BaseModel):
@@ -28,13 +33,13 @@ class UnclassifiedEntity(StrictSchema):
     context: str = Field(min_length=1, max_length=2000)
 
 
-class ExtractionResult(StrictSchema):
+class ExtractionCandidates(StrictSchema):
     entities: list[ExtractedEntity] = Field(max_length=60)
     relationships: list[ExtractedRelationship] = Field(max_length=10)
     unclassified_entities: list[UnclassifiedEntity] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_graph_contract(self) -> "ExtractionResult":
+    def validate_graph_contract(self) -> Self:
         ids: set[str] = set()
         by_id: dict[str, ExtractedEntity] = {}
         counts: dict[EntityType, int] = {}
@@ -59,6 +64,10 @@ class ExtractionResult(StrictSchema):
                 )
             validate_relationship(relationship.type, source.type, target.type)
         return self
+
+
+class ExtractionResult(ExtractionCandidates):
+    entities: list[ExtractedEntity] = Field(max_length=MAX_ENTITIES_PER_DOCUMENT)
 
 
 from enum import StrEnum

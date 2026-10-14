@@ -17,9 +17,11 @@ Celery worker -- Redis broker/result backend
 ```
 
 Docker Compose currently runs PostgreSQL, Neo4j, Redis, the API, and a Celery
-worker. The API accepts PDF uploads and stores metadata and file bytes in
-PostgreSQL. The worker parses documents, calls the configured LLM provider, and
-validates extraction output. Successful extraction stops at
+worker. The API accepts PDF and DOCX uploads and stores metadata and original
+file bytes in PostgreSQL. The Celery worker converts DOCX to PDF with LibreOffice
+and stores the result under `CONVERTED_PDF_DIR` before passing it to Docling.
+The worker then calls the configured LLM provider and validates extraction
+output. Successful extraction stops at
 `awaiting_persistence`; it is not yet a completed graph-ingestion flow.
 Docling's Markdown output is also written atomically to
 `data/processed/<document_id>.md` by the worker and is available on the host

@@ -58,6 +58,8 @@ type Stage =
 const stageLabels: Record<string, string> = {
   queued: "В очереди",
   queued_for_text_extraction: "Задание принято",
+  converting_docx: "Конвертация DOCX в PDF",
+  docx_conversion_failed: "Ошибка конвертации DOCX в PDF",
   parsing_pdf: "Чтение PDF в Docling",
   describing_images: "Анализ изображений",
   extracting_entities: "Извлечение сущностей",
@@ -73,6 +75,7 @@ const stageLabels: Record<string, string> = {
 };
 
 const errorStageLabels: Record<string, string> = {
+  DOCX_CONVERSION_FAILED: "Ошибка конвертации DOCX в PDF",
   PDF_PARSING_FAILED: "Ошибка чтения PDF в Docling",
   IMAGE_DESCRIPTION_FAILED: "Ошибка анализа изображений",
   ENTITY_EXTRACTION_FAILED: "Ошибка извлечения сущностей",
@@ -100,7 +103,7 @@ const entityTypeLabels: Record<string, string> = {
 
 const pipelineSteps: { id: Stage; label: string }[] = [
   { id: "upload", label: "Загрузка" },
-  { id: "parsing", label: "Чтение PDF" },
+  { id: "parsing", label: "Подготовка и чтение" },
   { id: "extracting", label: "Извлечение" },
   { id: "done", label: "Результат" },
 ];
@@ -110,6 +113,7 @@ function getStage(job: IngestionJob): Stage {
   if (job.status === "awaiting_persistence" || job.status === "completed") {
     return "done";
   }
+  if (job.current_step === "converting_docx") return "parsing";
   if (job.current_step === "parsing_pdf") return "parsing";
   if (job.current_step === "describing_images") return "images";
   if (job.current_step === "extracting_entities") return "extracting";
@@ -179,11 +183,11 @@ function App() {
   const handleFileChange = (selected: File | undefined) => {
     setError(null);
     if (!selected) return;
-    if (!selected.name.toLowerCase().endsWith(".pdf")) {
+    if (!/\.(pdf|docx)$/i.test(selected.name)) {
       setFile(null);
       setError({
         title: "Неподдерживаемый формат",
-        message: "Выберите документ в формате PDF.",
+        message: "Выберите документ в формате PDF или DOCX.",
       });
       return;
     }
@@ -284,10 +288,10 @@ function App() {
       </header>
 
       <section className="intro">
-        <div className="eyebrow"><span className="eyebrow-dot" /> MVP · PDF INGESTION</div>
+        <div className="eyebrow"><span className="eyebrow-dot" /> MVP · DOCUMENT INGESTION</div>
         <h1>Загрузите документ.<br /><span>Получите знания.</span></h1>
         <p>
-          Проверьте обработку PDF: от чтения текста до извлечения материалов,
+          Проверьте обработку PDF и DOCX: от чтения текста до извлечения материалов,
           процессов и других сущностей.
         </p>
       </section>
@@ -299,7 +303,7 @@ function App() {
               <span className="section-kicker">ШАГ 01</span>
               <h2>Новый документ</h2>
             </div>
-            <span className="format-badge"><FileText size={14} /> PDF</span>
+            <span className="format-badge"><FileText size={14} /> PDF · DOCX</span>
           </div>
 
           <form onSubmit={submitDocument}>
@@ -307,7 +311,7 @@ function App() {
               ref={fileInput}
               className="visually-hidden"
               type="file"
-              accept=".pdf,application/pdf"
+              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               onChange={(event) => handleFileChange(event.target.files?.[0])}
             />
             <button
@@ -331,7 +335,7 @@ function App() {
                 </>
               ) : (
                 <>
-                  <span className="drop-title">Перетащите PDF сюда</span>
+                  <span className="drop-title">Перетащите PDF или DOCX сюда</span>
                   <span className="drop-hint">или нажмите, чтобы выбрать файл</span>
                 </>
               )}
@@ -371,7 +375,7 @@ function App() {
             </button>
             <div className="privacy-note">
               <CircleHelp size={14} />
-              Принимаются только PDF-файлы. Оригинал сохраняется в системе.
+              Принимаются PDF и DOCX. DOCX конвертируется в PDF перед обработкой; оригинал сохраняется.
             </div>
           </form>
         </div>
@@ -388,7 +392,7 @@ function App() {
                 </div>
               </div>
               <h2>Здесь появится результат</h2>
-              <p>Загрузите PDF, чтобы увидеть ход обработки и найденные сущности.</p>
+              <p>Загрузите PDF или DOCX, чтобы увидеть ход обработки и найденные сущности.</p>
             </div>
           )}
 
@@ -415,8 +419,13 @@ function App() {
                   const isComplete = index < completedSteps;
                   const isCurrent = index === completedSteps && stage !== "done" && stage !== "error";
                   const isFailed = stage === "error" && (
-                    (index === 1 && job?.current_step === "pdf_parsing_failed") ||
-                    (index === 2 && job?.current_step !== "pdf_parsing_failed")
+                    (index === 1 && (
+                      job?.current_step === "pdf_parsing_failed" ||
+                      job?.current_step === "docx_conversion_failed"
+                    )) ||
+                    (index === 2 &&
+                      job?.current_step !== "pdf_parsing_failed" &&
+                      job?.current_step !== "docx_conversion_failed")
                   );
                   return (
                     <div className={`step ${isComplete ? "step-complete" : ""} ${isCurrent ? "step-current" : ""} ${isFailed ? "step-failed" : ""}`} key={step.id}>
@@ -516,7 +525,7 @@ function App() {
 
       <footer className="footer">
         <span>© Nikelpower · Инструмент проверки pipeline</span>
-        <span><span className="footer-status-dot" /> PDF → Docling → LLM</span>
+        <span><span className="footer-status-dot" /> PDF/DOCX → PDF → Docling → LLM</span>
       </footer>
     </main>
   );

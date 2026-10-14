@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from app.schemas.extraction import ExtractionResult, ImageDescription
+from app.schemas.extraction import ExtractionCandidates, ImageDescription
 
 
 @dataclass(frozen=True)
@@ -47,4 +47,4 @@ class LLMProvider(Protocol):
         document_text: str,
         image_descriptions: list[ImageDescription],
         on_raw_response: Callable[[str], None] | None = None,
-    ) -> ExtractionResult: ...
+    ) -> ExtractionCandidates: ...

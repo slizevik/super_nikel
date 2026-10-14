@@ -5,7 +5,7 @@ under `/api/v1`.
 
 | Method | Path | Behavior |
 |---|---|---|
-| `POST` | `/api/v1/documents` | Accept a PDF and category; returns HTTP 202 with document and job data |
+| `POST` | `/api/v1/documents` | Accept a PDF or DOCX and category; returns HTTP 202 with document and job data |
 | `GET` | `/api/v1/documents` | List uploaded documents |
 | `GET` | `/api/v1/documents/{id}` | Return document metadata and extracted information |
 | `GET` | `/api/v1/documents/{id}/download` | Download the original document |
@@ -14,8 +14,9 @@ under `/api/v1`.
 | `GET` | `/health/live` | Check that the API process is running |
 | `GET` | `/health/ready` | Check PostgreSQL and Redis readiness |
 
-Uploads require a readable PDF and a non-empty category (maximum 100
-characters). The upload size limit is configurable. An extracted job in
+Uploads require a readable PDF or DOCX and a non-empty category (maximum 100
+characters). The original upload is preserved. The worker converts DOCX to PDF
+before parsing; the PDF and DOCX size limit is configurable. An extracted job in
 `awaiting_persistence` is not terminal success. There are currently no Kafka
 contracts, graph-query endpoint, chat-answering endpoint, or human-review
 endpoint.

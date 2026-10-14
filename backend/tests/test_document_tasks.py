@@ -10,12 +10,17 @@ from app.schemas.extraction import (
     EntityType,
     ExtractedEntity,
     ExtractedRelationship,
+    ExtractionCandidates,
     ExtractionResult,
     ImageDescription,
     ImageKind,
     RelationshipType,
 )
 from app.services.llm.base import LLMConfigurationError
+from app.services.document_conversion import (
+    DOCX_MIME_TYPE,
+    DocxConversionError,
+)
 from app.services.pdf_parser import ParsedDocument
 from app.tasks import PipelineFailure, parse_pdf_document
 
@@ -69,7 +74,7 @@ class MockLLMProvider:
         on_raw_response=None,
     ):
         assert len(image_descriptions) == len(self.images)
-        result = ExtractionResult(
+        result = ExtractionCandidates(
             entities=[
                 ExtractedEntity(
                     id="process-1",
@@ -109,7 +114,10 @@ class MockLLMProvider:
 
 
 def setup_task_session(monkeypatch, parsed_output_dir: Path, parsed_document=None):
-    document = SimpleNamespace(original_file=b"%PDF-1.7")
+    document = SimpleNamespace(
+        original_file=b"%PDF-1.7",
+        mime_type="application/pdf",
+    )
     job = SimpleNamespace(
         status=IngestionStatus.QUEUED.value,
         current_step="queued",
@@ -133,6 +141,9 @@ def setup_task_session(monkeypatch, parsed_output_dir: Path, parsed_document=Non
         lambda: SimpleNamespace(
             analyze_document_images=True,
             parsed_documents_dir=str(parsed_output_dir),
+            converted_pdf_dir=str(parsed_output_dir / "converted"),
+            libreoffice_binary="libreoffice",
+            libreoffice_timeout_sec=180,
         ),
     )
     monkeypatch.setattr(
@@ -149,6 +160,77 @@ def setup_task_session(monkeypatch, parsed_output_dir: Path, parsed_document=Non
         ),
     )
     return session, job
+
+
+def test_pipeline_converts_docx_before_pdf_parsing_and_llm(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    session, job = setup_task_session(monkeypatch, tmp_path)
+    session.document.mime_type = DOCX_MIME_TYPE
+    provider = MockLLMProvider()
+    monkeypatch.setattr("app.tasks.get_llm_provider", lambda _budget: provider)
+    steps: list[str] = []
+    converted_pdf_path = tmp_path / "converted.pdf"
+
+    def convert_docx(*_args) -> Path:
+        steps.append("convert")
+        converted_pdf_path.write_bytes(b"%PDF-1.7 converted")
+        return converted_pdf_path
+
+    def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
+        steps.append("parse")
+        assert pdf_bytes == b"%PDF-1.7 converted"
+        return ParsedDocument(
+            markdown=(
+                "# Nickel leaching\n"
+                "Nickel leaching was studied. Nickel leaching used nickel ore. "
+                "Nickel ore was tested."
+            ),
+            images=[],
+            manifest={"format": "pdf", "page_count": 1, "images": []},
+        )
+
+    monkeypatch.setattr("app.tasks.convert_docx_to_pdf", convert_docx)
+    monkeypatch.setattr("app.tasks._parse_document", parse_pdf)
+
+    parse_pdf_document.run(str(uuid4()), str(uuid4()))
+
+    assert steps == ["convert", "parse"]
+    assert job.status == IngestionStatus.AWAITING_PERSISTENCE.value
+    assert provider.raw_responses
+
+
+def test_docx_conversion_failure_stops_before_pdf_parser_and_llm(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    session, job = setup_task_session(monkeypatch, tmp_path)
+    session.document.mime_type = DOCX_MIME_TYPE
+    monkeypatch.setattr(
+        "app.tasks.convert_docx_to_pdf",
+        lambda *_args: (_ for _ in ()).throw(
+            DocxConversionError("LibreOffice executable was not found.")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.tasks._parse_document",
+        lambda _pdf_bytes: pytest.fail(
+            "PDF parser must not run after conversion fails"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.tasks.get_llm_provider",
+        lambda _budget: pytest.fail("LLM must not run after conversion fails"),
+    )
+
+    with pytest.raises(PipelineFailure, match="LibreOffice executable was not found"):
+        parse_pdf_document.run(str(uuid4()), str(uuid4()))
+
+    assert job.status == IngestionStatus.FAILED.value
+    assert job.current_step == "docx_conversion_failed"
+    assert job.error_code == "DOCX_CONVERSION_FAILED"
+    assert session.commits == 2
 
 
 def test_pipeline_saves_docling_markdown_and_stops_before_persistence(

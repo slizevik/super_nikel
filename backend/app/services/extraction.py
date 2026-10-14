@@ -4,8 +4,10 @@ from app.core.config import get_settings
 from app.schemas.extraction import (
     ExtractedEntity,
     ExtractedRelationship,
+    ExtractionCandidates,
     ExtractionResult,
     ImageDescription,
+    MAX_ENTITIES_PER_DOCUMENT,
 )
 
 
@@ -45,7 +47,7 @@ def _key_sections(document_text: str) -> str:
 
 
 def validate_extraction_result(
-    result: ExtractionResult,
+    result: ExtractionCandidates,
     document_text: str,
     image_descriptions: list[ImageDescription],
     minimum_occurrences: int | None = None,
@@ -126,8 +128,15 @@ def validate_extraction_result(
         for relationship in result.relationships
         for endpoint in (relationship.source_id, relationship.target_id)
     }
-    retained = []
-    for entity in canonical_entities.values():
+    retained: list[tuple[ExtractedEntity, int, bool, int, int]] = []
+    relation_degrees: dict[str, int] = {}
+    for relationship in result.relationships:
+        for endpoint in (relationship.source_id, relationship.target_id):
+            canonical_id = original_to_canonical_id[endpoint]
+            relation_degrees[canonical_id] = (
+                relation_degrees.get(canonical_id, 0) + 1
+            )
+    for position, entity in enumerate(canonical_entities.values()):
         if entity.canonical_label.casefold().strip() in GENERIC_NOISE:
             continue
         labels = {entity.canonical_label, entity.label, *entity.aliases}
@@ -143,9 +152,29 @@ def validate_extraction_result(
             or appears_in_key_section
             or entity.id in relationship_entity_ids
         ):
-            retained.append(entity)
+            retained.append(
+                (
+                    entity,
+                    occurrence_count,
+                    appears_in_key_section,
+                    relation_degrees.get(entity.id, 0),
+                    position,
+                )
+            )
 
-    retained_ids = {entity.id for entity in retained}
+    selected = sorted(
+        retained,
+        key=lambda candidate: (
+            candidate[2],
+            candidate[1],
+            candidate[3],
+            -candidate[4],
+        ),
+        reverse=True,
+    )[:MAX_ENTITIES_PER_DOCUMENT]
+    selected_entities = [candidate[0] for candidate in selected]
+
+    retained_ids = {entity.id for entity in selected_entities}
     relationships_by_key: dict[
         tuple[str, str, str], ExtractedRelationship
     ] = {}
@@ -176,7 +205,7 @@ def validate_extraction_result(
             )
 
     return ExtractionResult(
-        entities=retained,
+        entities=selected_entities,
         relationships=list(relationships_by_key.values()),
         unclassified_entities=result.unclassified_entities,
     )

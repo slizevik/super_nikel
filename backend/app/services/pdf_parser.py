@@ -4,6 +4,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+import structlog
+
+
+logger = structlog.get_logger(__name__)
+
 
 class DoclingParsingError(RuntimeError):
     pass
@@ -42,15 +47,6 @@ def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
 
             for index, picture in enumerate(document.pictures, start=1):
                 image_id = f"image-{index:04d}"
-                image = picture.get_image(doc=document)
-                if image is None:
-                    raise DoclingParsingError(
-                        f"Docling did not return image data for {image_id}."
-                    )
-
-                image_buffer = BytesIO()
-                image.save(image_buffer, format="PNG")
-                content = image_buffer.getvalue()
                 caption = picture.caption_text(doc=document)
                 page_numbers = sorted(
                     {
@@ -59,12 +55,44 @@ def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
                         if getattr(provenance, "page_no", None) is not None
                     }
                 )
+                image = picture.get_image(doc=document)
+                if image is None:
+                    image_manifest.append(
+                        {
+                            "image_id": image_id,
+                            "caption": (
+                                caption.strip()
+                                if caption and caption.strip()
+                                else None
+                            ),
+                            "page_numbers": page_numbers,
+                            "width": None,
+                            "height": None,
+                            "media_type": None,
+                            "image_data_available": False,
+                            "skip_reason": "image_data_unavailable",
+                        }
+                    )
+                    logger.warning(
+                        "docling_picture_data_unavailable",
+                        image_id=image_id,
+                        page_numbers=page_numbers,
+                    )
+                    continue
+
+                image_buffer = BytesIO()
+                image.save(image_buffer, format="PNG")
+                content = image_buffer.getvalue()
                 images.append(
                     ParsedImage(
                         image_id=image_id,
                         content=content,
                         media_type="image/png",
-                        caption=caption.strip() if caption and caption.strip() else None,
+                        caption=(
+                            caption.strip()
+                            if caption and caption.strip()
+                            else None
+                        ),
                         page_numbers=page_numbers,
                         width=image.width,
                         height=image.height,
@@ -78,6 +106,7 @@ def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
                         "width": image.width,
                         "height": image.height,
                         "media_type": "image/png",
+                        "image_data_available": True,
                     }
                 )
 
@@ -88,6 +117,8 @@ def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
                 "format": "pdf",
                 "page_count": len(document.pages),
                 "image_count": len(images),
+                "detected_picture_count": len(document.pictures),
+                "skipped_picture_count": len(document.pictures) - len(images),
                 "images": image_manifest,
             }
             return ParsedDocument(markdown, images, manifest)

@@ -1,7 +1,9 @@
 import hashlib
+from io import BytesIO
 from pathlib import PurePath
 from urllib.parse import quote
 from uuid import UUID
+from zipfile import BadZipFile, ZipFile
 
 import structlog
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -12,6 +14,11 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db.models import Document, IngestionJob
 from app.db.session import get_db
+from app.services.document_conversion import (
+    DOCX_MIME_TYPE,
+    PDF_MIME_TYPE,
+    PDF_SIGNATURE,
+)
 from app.schemas.documents import (
     DocumentDetailResponse,
     DocumentResponse,
@@ -22,19 +29,23 @@ from app.tasks import parse_pdf_document
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
-PDF_SIGNATURE = b"%PDF-"
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 logger = structlog.get_logger(__name__)
 
 
-async def read_pdf_upload(file: UploadFile) -> tuple[str, bytes]:
+async def read_document_upload(file: UploadFile) -> tuple[str, str, bytes]:
     try:
         filename = PurePath(file.filename or "").name
         filename = filename.replace("\\", "/").rsplit("/", 1)[-1]
-        if not filename or not filename.lower().endswith(".pdf"):
+        extension = PurePath(filename).suffix.lower()
+        mime_type = {
+            ".pdf": PDF_MIME_TYPE,
+            ".docx": DOCX_MIME_TYPE,
+        }.get(extension)
+        if not filename or mime_type is None:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail="Only PDF files are supported.",
+                detail="Only PDF and DOCX files are supported.",
             )
 
         maximum_size = get_settings().max_upload_size_bytes
@@ -44,16 +55,33 @@ async def read_pdf_upload(file: UploadFile) -> tuple[str, bytes]:
             if len(contents) > maximum_size:
                 raise HTTPException(
                     status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                    detail=f"PDF exceeds the {maximum_size}-byte upload limit.",
+                    detail=(
+                        f"Document exceeds the {maximum_size}-byte upload limit."
+                    ),
                 )
 
-        pdf_bytes = bytes(contents)
-        if not pdf_bytes.startswith(PDF_SIGNATURE):
+        document_bytes = bytes(contents)
+        if mime_type == PDF_MIME_TYPE and not document_bytes.startswith(
+            PDF_SIGNATURE
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="The uploaded file does not have a valid PDF signature.",
             )
-        return filename[:512], pdf_bytes
+        if mime_type == DOCX_MIME_TYPE:
+            try:
+                with ZipFile(BytesIO(document_bytes)) as archive:
+                    if not {
+                        "[Content_Types].xml",
+                        "word/document.xml",
+                    }.issubset(archive.namelist()):
+                        raise BadZipFile("Missing required DOCX package files.")
+            except BadZipFile as error:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="The uploaded file is not a valid DOCX document.",
+                ) from error
+        return filename[:512], mime_type, document_bytes
     finally:
         await file.close()
 
@@ -64,7 +92,7 @@ async def upload_document(
     category: str = Form(min_length=1, max_length=100),
     session: Session = Depends(get_db),
 ) -> DocumentUploadResponse:
-    filename, pdf_bytes = await read_pdf_upload(file)
+    filename, mime_type, document_bytes = await read_document_upload(file)
     normalized_category = category.strip()
     if not normalized_category:
         raise HTTPException(
@@ -74,11 +102,11 @@ async def upload_document(
 
     document = Document(
         original_filename=filename,
-        mime_type="application/pdf",
+        mime_type=mime_type,
         category=normalized_category,
-        file_size_bytes=len(pdf_bytes),
-        sha256=hashlib.sha256(pdf_bytes).hexdigest(),
-        original_file=pdf_bytes,
+        file_size_bytes=len(document_bytes),
+        sha256=hashlib.sha256(document_bytes).hexdigest(),
+        original_file=document_bytes,
         authors=[],
     )
     job = IngestionJob(
@@ -183,7 +211,7 @@ def download_document(
     filename = quote(document.original_filename, safe="")
     return Response(
         content=document.original_file,
-        media_type="application/pdf",
+        media_type=document.mime_type,
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{filename}"
         },

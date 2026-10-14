@@ -29,7 +29,11 @@ class Document(Base):
     __table_args__ = (
         CheckConstraint("file_size_bytes > 0", name="ck_documents_file_size_positive"),
         CheckConstraint(
-            "mime_type = 'application/pdf'", name="ck_documents_pdf_only"
+            "mime_type IN ("
+            "'application/pdf', "
+            "'application/vnd.openxmlformats-officedocument.wordprocessingml.document'"
+            ")",
+            name="ck_documents_supported_formats",
         ),
     )
 

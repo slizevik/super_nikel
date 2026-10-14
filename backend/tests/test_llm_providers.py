@@ -6,7 +6,11 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.schemas.extraction import ExtractionResult, ImageDescription
+from app.schemas.extraction import (
+    ExtractionCandidates,
+    ExtractionResult,
+    ImageDescription,
+)
 from app.services.llm.base import LLMConfigurationError, LLMResponseError
 from app.services.llm.budget import TokenBudget
 from app.services.llm.factory import create_llm_provider
@@ -84,11 +88,19 @@ def test_yandex_provider_sends_json_extraction_request(monkeypatch) -> None:
 
     result = provider.extract_entities("The sample contains nickel.", [])
 
-    assert isinstance(result, ExtractionResult)
+    assert isinstance(result, ExtractionCandidates)
     assert result.entities[0].canonical_label == "Ni"
     request_messages = captured["json"]["messages"]
     assert "Always include all three top-level keys" in request_messages[0]["content"]
     assert "Never return an empty object ({})" in request_messages[0]["content"]
+    assert (
+        'HARD LIMIT: Return no more than 15 entities in the entire "entities" array'
+        in request_messages[0]["content"]
+    )
+    assert "rank candidates, and keep only the 15 most important" in (
+        request_messages[0]["content"]
+    )
+    assert "frequently across the document" in request_messages[0]["content"]
     assert (
         "Document text:\nThe sample contains nickel."
         in request_messages[1]["content"]

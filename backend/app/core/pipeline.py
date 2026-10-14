@@ -11,6 +11,8 @@ class IngestionStatus(StrEnum):
 
 class PipelineStep(StrEnum):
     QUEUED = "queued"
+    CONVERTING_DOCX = "converting_docx"
+    DOCX_CONVERSION_ERROR = "docx_conversion_failed"
     PARSING_PDF = "parsing_pdf"
     PARSED_DOCUMENT_SAVE_ERROR = "parsed_document_save_failed"
     MODEL_RESPONSE_SAVE_ERROR = "model_response_save_failed"

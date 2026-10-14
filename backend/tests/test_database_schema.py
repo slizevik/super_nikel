@@ -4,16 +4,21 @@ from app.db.base import Base
 from app.db.models import Document, DocumentChunk, IngestionJob
 
 
-def test_document_storage_and_pdf_only_constraint() -> None:
+def test_document_storage_supports_pdf_and_docx() -> None:
     table = Document.__table__
 
     assert {"original_file", "sha256", "category", "source_metadata"} <= set(
         table.columns.keys()
     )
-    assert any(
-        "mime_type = 'application/pdf'" in str(check.sqltext)
+    format_constraint = next(
+        check
         for check in table.constraints
-        if hasattr(check, "sqltext")
+        if getattr(check, "name", None) == "ck_documents_supported_formats"
+    )
+    assert "application/pdf" in str(format_constraint.sqltext)
+    assert (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        in str(format_constraint.sqltext)
     )
 
 

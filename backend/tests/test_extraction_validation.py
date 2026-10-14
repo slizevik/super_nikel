@@ -4,6 +4,7 @@ from app.schemas.extraction import (
     EntityType,
     ExtractedEntity,
     ExtractedRelationship,
+    ExtractionCandidates,
     ExtractionResult,
     RelationshipType,
 )
@@ -172,3 +173,73 @@ def test_unknown_relationship_endpoint_is_rejected_by_schema() -> None:
                 )
             ],
         )
+
+
+def test_extraction_result_schema_enforces_fifteen_entity_limit() -> None:
+    entities = [
+        entity(
+            f"entity-{index}",
+            list(EntityType)[index % len(EntityType)],
+            f"entity {index}",
+            f"evidence {index}",
+        )
+        for index in range(16)
+    ]
+
+    with pytest.raises(ValueError, match="at most 15 items"):
+        ExtractionResult(entities=entities, relationships=[])
+
+
+def test_validation_selects_top_fifteen_entities_and_drops_orphan_relations() -> None:
+    labels = [f"High {index}" for index in range(14)] + ["Low frequency"]
+    text_lines = ["# Central topic", "## Results"]
+    entities = [
+        entity(
+            "central",
+            EntityType.PROCESS,
+            "Central topic",
+            "# Central topic",
+        )
+    ]
+    for index, label in enumerate(labels):
+        occurrence_count = 2 if index == len(labels) - 1 else 4
+        evidence = f"{label} supports the main finding."
+        text_lines.extend([evidence] * (occurrence_count - 1))
+        text_lines.append(label)
+        entities.append(
+            entity(
+                f"entity-{index}",
+                (
+                    EntityType.MATERIAL
+                    if index == len(labels) - 1
+                    else list(EntityType)[(index + 1) % len(EntityType)]
+                ),
+                label,
+                evidence,
+            )
+        )
+    text = "\n".join(text_lines)
+    candidates = ExtractionCandidates(
+        entities=entities,
+        relationships=[
+            ExtractedRelationship(
+                source_id="central",
+                target_id="entity-14",
+                type=RelationshipType.USES_MATERIAL,
+                evidence="Low frequency supports the main finding.",
+            )
+        ],
+    )
+
+    result = validate_extraction_result(
+        candidates,
+        text,
+        [],
+        minimum_occurrences=2,
+    )
+
+    assert len(result.entities) == 15
+    assert "central" in {item.id for item in result.entities}
+    assert "entity-13" in {item.id for item in result.entities}
+    assert "entity-14" not in {item.id for item in result.entities}
+    assert result.relationships == []

@@ -9,7 +9,11 @@ from app.core.config import get_settings
 from app.core.pipeline import IngestionStatus, PipelineStep, transition_job
 from app.db.models import Document, IngestionJob
 from app.db.session import SessionLocal
-from app.schemas.extraction import ExtractionResult, ImageDescription
+from app.schemas.extraction import (
+    ExtractionCandidates,
+    ExtractionResult,
+    ImageDescription,
+)
 from app.services.extraction import ExtractionValidationError, validate_extraction_result
 from app.services.llm.base import (
     LLMConfigurationError,
@@ -24,6 +28,12 @@ from app.services.llm.factory import create_llm_provider
 from app.services.parsed_document_storage import (
     save_model_response,
     save_parsed_markdown,
+)
+from app.services.document_conversion import (
+    DOCX_MIME_TYPE,
+    PDF_MIME_TYPE,
+    DocxConversionError,
+    convert_docx_to_pdf,
 )
 from app.services.pdf_parser import DoclingParsingError, ParsedDocument, parse_pdf
 
@@ -130,7 +140,7 @@ def _extract_entities(
     parsed_document: ParsedDocument,
     image_descriptions: list[ImageDescription],
     on_raw_response: Callable[[str], None] | None = None,
-) -> ExtractionResult:
+) -> ExtractionCandidates:
     try:
         extracted = provider.extract_entities(
             parsed_document.markdown,
@@ -174,7 +184,7 @@ def _extract_entities(
 
 
 def _validate_extraction(
-    extracted: ExtractionResult,
+    extracted: ExtractionCandidates,
     parsed_document: ParsedDocument,
     image_descriptions: list[ImageDescription],
 ) -> ExtractionResult:
@@ -216,7 +226,12 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
             transition_job(job, IngestionStatus.PROCESSING)
         elif job.status != IngestionStatus.PROCESSING.value:
             raise ValueError(f"Cannot process a job with status '{job.status}'.")
-        _set_step(job, PipelineStep.PARSING_PDF, 10)
+        is_docx = document.mime_type == DOCX_MIME_TYPE
+        _set_step(
+            job,
+            PipelineStep.CONVERTING_DOCX if is_docx else PipelineStep.PARSING_PDF,
+            5 if is_docx else 10,
+        )
         job.started_at = job.started_at or datetime.now(timezone.utc)
         job.attempt += 1
         job.error_code = None
@@ -225,7 +240,39 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
         task_logger.info("ingestion_job_started", attempt=job.attempt)
 
         try:
-            parsed_document = _parse_document(document.original_file)
+            pdf_bytes = document.original_file
+            if is_docx:
+                settings = get_settings()
+                try:
+                    converted_pdf_path = convert_docx_to_pdf(
+                        document.original_file,
+                        str(document_uuid),
+                        settings.converted_pdf_dir,
+                        settings.libreoffice_binary,
+                        settings.libreoffice_timeout_sec,
+                    )
+                    pdf_bytes = converted_pdf_path.read_bytes()
+                except (DocxConversionError, OSError) as error:
+                    raise PipelineFailure(
+                        "DOCX_CONVERSION_FAILED",
+                        PipelineStep.DOCX_CONVERSION_ERROR,
+                        str(error),
+                    ) from error
+                task_logger.info(
+                    "docx_converted_to_pdf",
+                    output_path=str(converted_pdf_path),
+                    pdf_size_bytes=len(pdf_bytes),
+                )
+                _set_step(job, PipelineStep.PARSING_PDF, 10)
+                session.commit()
+            elif document.mime_type != PDF_MIME_TYPE:
+                raise PipelineFailure(
+                    "UNSUPPORTED_DOCUMENT_FORMAT",
+                    PipelineStep.DOCX_CONVERSION_ERROR,
+                    f"Unsupported document media type: {document.mime_type}.",
+                )
+
+            parsed_document = _parse_document(pdf_bytes)
             try:
                 parsed_markdown_path = save_parsed_markdown(
                     parsed_document.markdown,

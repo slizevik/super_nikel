@@ -1,7 +1,9 @@
 import asyncio
 from datetime import datetime, timezone
+from io import BytesIO
 from types import SimpleNamespace
 from uuid import uuid4
+from zipfile import ZipFile
 
 import httpx
 import pytest
@@ -82,6 +84,14 @@ def post_upload(client, filename: str, body: bytes):
     return asyncio.run(send_request())
 
 
+def make_docx() -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types />")
+        archive.writestr("word/document.xml", "<document />")
+    return buffer.getvalue()
+
+
 def test_upload_accepts_pdf_and_queues_text_extraction(client) -> None:
     response = post_upload(client, "paper.pdf", b"%PDF-1.7 test body")
 
@@ -98,10 +108,38 @@ def test_upload_accepts_pdf_and_queues_text_extraction(client) -> None:
     assert len(client.added) == 2
 
 
-def test_upload_rejects_non_pdf_extension(client) -> None:
-    response = post_upload(client, "paper.docx", b"%PDF-1.7 test body")
+def test_upload_accepts_docx_and_preserves_the_original(client) -> None:
+    docx = make_docx()
+
+    response = post_upload(client, "paper.docx", docx)
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["document"]["original_filename"] == "paper.docx"
+    assert (
+        body["document"]["mime_type"]
+        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert client.added[0].original_file == docx
+    assert client.added[0].file_size_bytes == len(docx)
+    download = documents.download_document(client.added[0].id, client)
+    assert download.media_type == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert download.body == docx
+
+
+def test_upload_rejects_unsupported_extension(client) -> None:
+    response = post_upload(client, "paper.doc", b"%PDF-1.7 test body")
 
     assert response.status_code == 415
+    assert client.added == []
+
+
+def test_upload_rejects_invalid_docx_package(client) -> None:
+    response = post_upload(client, "paper.docx", b"not a DOCX")
+
+    assert response.status_code == 422
     assert client.added == []
 
 
