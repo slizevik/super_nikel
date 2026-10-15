@@ -70,6 +70,14 @@ fail explicitly with `LLM_CREDENTIALS_MISSING`; they are never reported as
 success. Configure models and endpoint with `YANDEX_CLOUD_MODEL`,
 `YANDEX_VISION_MODEL`, and `YANDEX_CLOUD_BASE_URL`.
 
+GigaChat is also available as a temporary provider. Set `GIGACHAT_CREDENTIALS`
+to the Authorization Key from the GigaChat API project (not an Access Token),
+then set `LLM_PROVIDER=gigachat`. Keep the Yandex credentials configured to
+switch back by restoring `LLM_PROVIDER=yandex`. Both API and worker read the
+provider configuration at startup, so recreate those services after changing
+`.env`. GigaChat images are uploaded for vision analysis and deleted after use;
+the configured model must support image inputs.
+
 After successful extraction and validation, a job enters
 `awaiting_persistence`. This is non-terminal: the document and extracted
 results have not yet been committed to the knowledge graph. Only a future

@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     )
     yandex_vision_model: str | None = None
     yandex_cloud_base_url: str = "https://llm.api.cloud.yandex.net/v1"
+    gigachat_credentials: str | None = None
+    gigachat_scope: str = "GIGACHAT_API_PERS"
+    gigachat_model: str = "GigaChat"
+    gigachat_vision_model: str | None = None
+    gigachat_api_base_url: str = "https://api.giga.chat/v1"
+    gigachat_oauth_url: str = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    gigachat_max_output_tokens: int = Field(default=8192, gt=0)
     llm_request_timeout_seconds: float = Field(default=120, gt=0)
     entity_min_occurrences: int = Field(default=2, ge=1)
     yandex_embedding_model: str = "emb/latest"

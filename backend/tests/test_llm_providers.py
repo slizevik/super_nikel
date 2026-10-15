@@ -14,6 +14,7 @@ from app.schemas.extraction import (
 from app.services.llm.base import LLMConfigurationError, LLMResponseError
 from app.services.llm.budget import TokenBudget
 from app.services.llm.factory import create_llm_provider
+from app.services.llm.gigachat import GigaChatProvider
 from app.services.llm.yandex import YandexGPTProvider
 
 
@@ -37,6 +38,197 @@ def test_provider_factory_requires_yandex_folder_id() -> None:
 
     with pytest.raises(LLMConfigurationError, match="YANDEX_CLOUD_FOLDER"):
         create_llm_provider(settings, TokenBudget(1000))
+
+
+def test_provider_factory_selects_gigachat_without_yandex_credentials() -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://localhost/nikelpower",
+        llm_provider="gigachat",
+        gigachat_credentials="authorization-key",
+    )
+
+    provider = create_llm_provider(settings, TokenBudget(1000))
+
+    assert isinstance(provider, GigaChatProvider)
+
+
+def test_provider_factory_requires_gigachat_credentials() -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://localhost/nikelpower",
+        llm_provider="gigachat",
+    )
+
+    with pytest.raises(LLMConfigurationError, match="GIGACHAT_CREDENTIALS"):
+        create_llm_provider(settings, TokenBudget(1000))
+
+
+def test_provider_factory_rejects_unknown_provider() -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://localhost/nikelpower",
+        llm_provider="unknown",
+    )
+
+    with pytest.raises(LLMConfigurationError, match="gigachat"):
+        create_llm_provider(settings, TokenBudget(1000))
+
+
+def test_gigachat_provider_exchanges_authorization_key_and_extracts_entities(
+    monkeypatch,
+) -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://localhost/nikelpower",
+        llm_provider="gigachat",
+        gigachat_credentials="authorization-key",
+        gigachat_model="GigaChat-Pro",
+    )
+    provider = GigaChatProvider(settings, TokenBudget(100_000))
+    payload = {
+        "entities": [
+            {
+                "id": "e1",
+                "type": "Material",
+                "label": "nickel",
+                "canonical_label": "Ni",
+                "aliases": ["nickel"],
+                "evidence": "The sample contains nickel.",
+            }
+        ],
+        "relationships": [],
+        "unclassified_entities": [],
+    }
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/oauth"):
+            return SimpleNamespace(
+                is_error=False,
+                json=lambda: {
+                    "access_token": "access-token",
+                    "expires_at": 4_000_000_000_000,
+                },
+            )
+        return SimpleNamespace(
+            is_error=False,
+            json=lambda: {
+                "choices": [{"message": {"content": json.dumps(payload)}}],
+                "usage": {
+                    "prompt_tokens": 50,
+                    "completion_tokens": 20,
+                    "total_tokens": 70,
+                },
+            },
+        )
+
+    monkeypatch.setattr("app.services.llm.gigachat.httpx.post", fake_post)
+
+    raw_responses = []
+    result = provider.extract_entities(
+        "The sample contains nickel.",
+        [],
+        on_raw_response=raw_responses.append,
+    )
+
+    assert isinstance(result, ExtractionCandidates)
+    assert result.entities[0].canonical_label == "Ni"
+    assert raw_responses == [json.dumps(payload)]
+    assert len(calls) == 2
+    oauth_url, oauth_kwargs = calls[0]
+    assert oauth_url == settings.gigachat_oauth_url
+    assert oauth_kwargs["headers"]["Authorization"] == "Basic authorization-key"
+    assert oauth_kwargs["headers"]["RqUID"]
+    assert oauth_kwargs["data"] == {"scope": "GIGACHAT_API_PERS"}
+    chat_url, chat_kwargs = calls[1]
+    assert chat_url == "https://api.giga.chat/v1/chat/completions"
+    assert chat_kwargs["headers"]["Authorization"] == "Bearer access-token"
+    assert chat_kwargs["json"]["model"] == "GigaChat-Pro"
+    assert chat_kwargs["json"]["max_tokens"] == 8192
+    assert chat_kwargs["json"]["stream"] is False
+    assert "HARD LIMIT: Return no more than 15 entities" in (
+        chat_kwargs["json"]["messages"][0]["content"]
+    )
+
+
+def test_gigachat_provider_uploads_attached_image_then_deletes_it(monkeypatch) -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://localhost/nikelpower",
+        gigachat_credentials="authorization-key",
+        gigachat_model="GigaChat-Pro",
+        gigachat_vision_model="GigaChat-Pro",
+    )
+    provider = GigaChatProvider(settings, TokenBudget(100_000))
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/oauth"):
+            return SimpleNamespace(
+                is_error=False,
+                json=lambda: {
+                    "access_token": "access-token",
+                    "expires_at": 4_000_000_000_000,
+                },
+            )
+        if url.endswith("/files"):
+            return SimpleNamespace(
+                is_error=False,
+                json=lambda: {"id": "uploaded-file-id"},
+            )
+        if url.endswith("/chat/completions"):
+            return SimpleNamespace(
+                is_error=False,
+                json=lambda: {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "image_id": "image-0001",
+                                        "kind": "chart",
+                                        "useful": True,
+                                        "description": "A chart.",
+                                        "key_information": "Nickel recovery rises.",
+                                        "caption": "Recovery",
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+        return SimpleNamespace(is_error=False, json=lambda: {})
+
+    monkeypatch.setattr("app.services.llm.gigachat.httpx.post", fake_post)
+
+    result = provider.describe_image(
+        SimpleNamespace(
+            image_id="image-0001",
+            content=b"png bytes",
+            media_type="image/png",
+            caption="Recovery",
+            width=16,
+            height=16,
+        ),
+        "Nickel leaching experiment.",
+    )
+
+    assert isinstance(result, ImageDescription)
+    assert result.image_id == "image-0001"
+    assert [url.rsplit("/", 1)[-1] for url, _kwargs in calls] == [
+        "oauth",
+        "files",
+        "completions",
+        "delete",
+    ]
+    upload = calls[1][1]
+    assert upload["data"] == {"purpose": "general"}
+    assert upload["files"]["file"][0] == "image-0001.png"
+    chat_request = calls[2][1]["json"]
+    assert chat_request["messages"][0]["attachments"] == ["uploaded-file-id"]
+    assert chat_request["messages"][0]["content"].startswith(
+        "Classify this document image"
+    )
+    assert calls[3][0].endswith("/files/uploaded-file-id/delete")
 
 
 def test_yandex_provider_sends_json_extraction_request(monkeypatch) -> None:
