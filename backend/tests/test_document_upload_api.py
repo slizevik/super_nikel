@@ -108,6 +108,52 @@ def test_upload_accepts_pdf_and_queues_text_extraction(client) -> None:
     assert len(client.added) == 2
 
 
+def test_document_list_filters_out_uploaded_documents(monkeypatch) -> None:
+    library_document = SimpleNamespace(
+        id=uuid4(),
+        original_filename="library-paper.pdf",
+        mime_type="application/pdf",
+        category="article",
+        title=None,
+        authors=[],
+        published_at=None,
+        file_size_bytes=100,
+        sha256="a" * 64,
+        source_type="library",
+        library_relative_path="library-paper.pdf",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    class ListSession:
+        statement = None
+
+        def execute(self, statement):
+            self.statement = statement
+            return SimpleNamespace(all=lambda: [(library_document, None)])
+
+    session = ListSession()
+    monkeypatch.setattr(
+        documents,
+        "get_settings",
+        lambda: SimpleNamespace(library_root="C:/articles"),
+    )
+    monkeypatch.setattr(
+        documents,
+        "resolve_library_file",
+        lambda root, relative_path: "C:/articles/library-paper.pdf",
+    )
+
+    response = documents.list_documents(limit=20, offset=0, session=session)
+
+    compiled_query = str(
+        session.statement.compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "documents.source_type = 'library'" in compiled_query
+    assert [document.original_filename for document in response] == [
+        "library-paper.pdf"
+    ]
+
+
 def test_upload_accepts_docx_and_preserves_the_original(client) -> None:
     docx = make_docx()
 

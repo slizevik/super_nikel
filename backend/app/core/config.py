@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -58,6 +59,8 @@ class Settings(BaseSettings):
     libreoffice_binary: str = "libreoffice"
     libreoffice_timeout_sec: int = Field(default=180, gt=0)
     converted_pdf_dir: str = "./data/ingestion/converted"
+    library_root: Path | None = None
+    max_images_for_llm: int = Field(default=8, ge=0)
     analyze_document_images: bool = True
     max_upload_size_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
     cors_origins: list[str] = ["http://localhost:5173"]

@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -21,8 +22,8 @@ from app.services.document_conversion import (
     DOCX_MIME_TYPE,
     DocxConversionError,
 )
-from app.services.pdf_parser import ParsedDocument
-from app.tasks import PipelineFailure, parse_pdf_document
+from app.services.pdf_parser import ParsedDocument, ParsedImage
+from app.tasks import PipelineFailure, _describe_images, parse_pdf_document
 
 
 class FakeSession:
@@ -113,6 +114,45 @@ class MockLLMProvider:
         return result
 
 
+def test_image_descriptions_are_capped_for_ui_uploads() -> None:
+    class ImageProvider:
+        def __init__(self) -> None:
+            self.image_ids: list[str] = []
+
+        def describe_image(self, image, _document_context):
+            self.image_ids.append(image.image_id)
+            return ImageDescription(
+                image_id=image.image_id,
+                kind=ImageKind.CHART,
+                useful=True,
+                description="Figure description",
+            )
+
+    provider = ImageProvider()
+    images = [
+        ParsedImage(
+            image_id=f"image-{index}",
+            content=b"image-data",
+            media_type="image/png",
+            caption=None,
+            page_numbers=[index],
+            width=100,
+            height=100,
+        )
+        for index in range(4)
+    ]
+    parsed_document = ParsedDocument(
+        markdown="Paper text",
+        images=images,
+        manifest={},
+    )
+
+    descriptions = _describe_images(provider, parsed_document, maximum_images=2)
+
+    assert provider.image_ids == ["image-0", "image-1"]
+    assert len(descriptions) == 2
+
+
 def setup_task_session(monkeypatch, parsed_output_dir: Path, parsed_document=None):
     document = SimpleNamespace(
         original_file=b"%PDF-1.7",
@@ -140,6 +180,7 @@ def setup_task_session(monkeypatch, parsed_output_dir: Path, parsed_document=Non
         "app.tasks.get_settings",
         lambda: SimpleNamespace(
             analyze_document_images=True,
+            max_images_for_llm=8,
             parsed_documents_dir=str(parsed_output_dir),
             converted_pdf_dir=str(parsed_output_dir / "converted"),
             libreoffice_binary="libreoffice",
@@ -199,6 +240,44 @@ def test_pipeline_converts_docx_before_pdf_parsing_and_llm(
     assert steps == ["convert", "parse"]
     assert job.status == IngestionStatus.AWAITING_PERSISTENCE.value
     assert provider.raw_responses
+
+
+def test_library_pdf_is_indexed_without_llm_calls(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    session, job = setup_task_session(monkeypatch, tmp_path)
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    pdf_path = library_root / "paper.pdf"
+    pdf_bytes = b"%PDF-1.7 library article"
+    pdf_path.write_bytes(pdf_bytes)
+    session.document.source_type = "library"
+    session.document.library_relative_path = "paper.pdf"
+    session.document.sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+    monkeypatch.setattr(
+        "app.tasks.get_settings",
+        lambda: SimpleNamespace(
+            analyze_document_images=True,
+            parsed_documents_dir=str(tmp_path),
+            converted_pdf_dir=str(tmp_path / "converted"),
+            libreoffice_binary="libreoffice",
+            libreoffice_timeout_sec=180,
+            library_root=library_root,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.tasks.get_llm_provider",
+        lambda _budget: pytest.fail("Library indexing must not call an LLM."),
+    )
+
+    parse_pdf_document.run(str(uuid4()), str(uuid4()))
+
+    assert job.status == IngestionStatus.COMPLETED.value
+    assert job.current_step == "indexed"
+    assert job.extracted_text is not None
+    assert job.extraction_result is None
+    assert job.tokens_consumed == 0
 
 
 def test_docx_conversion_failure_stops_before_pdf_parser_and_llm(

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
-from app.api.routes import documents, health, jobs
+from app.api.routes import documents, health, jobs, library
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -64,4 +64,5 @@ async def log_requests(
 app.include_router(health.router)
 app.include_router(jobs.router)
 app.include_router(documents.router, prefix="/api/v1")
+app.include_router(library.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")

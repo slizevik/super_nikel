@@ -1,0 +1,1 @@
+Цель: индексировать PDF из личной папки. Файлы: backend config/API/model/task/migration/tests, docker-compose, frontend, README и docs. Решения: mount read-only, path+SHA-256, Docling без LLM для папки; LLM остаётся только для upload. Риски: папка доступна, но PDF не найдены; Docker Engine выключен, миграция в БД не применена.

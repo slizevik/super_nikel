@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -14,6 +14,7 @@ import {
 
 const API_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
 const POLL_INTERVAL_MS = 2000;
+const LIBRARY_PAGE_SIZE = 50;
 
 type Entity = {
   id: string;
@@ -43,6 +44,27 @@ type IngestionJob = {
 type UploadResponse = {
   document: { id: string; original_filename: string; file_size_bytes: number };
   job: IngestionJob;
+};
+
+type LibraryDocument = {
+  id: string;
+  original_filename: string;
+  source_type: "upload" | "library";
+  library_relative_path: string | null;
+  file_size_bytes: number;
+  source_available: boolean;
+  job_status: string | null;
+  current_step: string | null;
+  error_message: string | null;
+};
+
+type LibraryScanSummary = {
+  discovered: number;
+  queued: number;
+  changed: number;
+  unchanged: number;
+  skipped_busy: number;
+  errors: string[];
 };
 
 type Stage =
@@ -169,6 +191,66 @@ function App() {
     null,
   );
   const [busy, setBusy] = useState(false);
+  const [library, setLibrary] = useState<LibraryDocument[]>([]);
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const [libraryLoadingMore, setLibraryLoadingMore] = useState(false);
+  const [libraryError, setLibraryError] = useState("");
+  const [libraryHasMore, setLibraryHasMore] = useState(false);
+  const [scanSummary, setScanSummary] = useState<LibraryScanSummary | null>(null);
+
+  const refreshLibrary = async () => {
+    const documents = await requestJson<LibraryDocument[]>(
+      `${API_URL}/documents?limit=${LIBRARY_PAGE_SIZE}&offset=0`,
+    );
+    setLibrary(documents);
+    setLibraryHasMore(documents.length === LIBRARY_PAGE_SIZE);
+  };
+
+  const loadMoreLibrary = async () => {
+    setLibraryLoadingMore(true);
+    setLibraryError("");
+    try {
+      const documents = await requestJson<LibraryDocument[]>(
+        `${API_URL}/documents?limit=${LIBRARY_PAGE_SIZE}&offset=${library.length}`,
+      );
+      setLibrary((current) => [...current, ...documents]);
+      setLibraryHasMore(documents.length === LIBRARY_PAGE_SIZE);
+    } catch (caught) {
+      setLibraryError(
+        caught instanceof Error ? caught.message : "Не удалось загрузить документы.",
+      );
+    } finally {
+      setLibraryLoadingMore(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshLibrary().catch((caught: unknown) => {
+      setLibraryError(
+        caught instanceof Error ? caught.message : "Не удалось загрузить библиотеку.",
+      );
+    });
+  }, []);
+
+  const scanLibrary = async () => {
+    setLibraryBusy(true);
+    setLibraryError("");
+    setScanSummary(null);
+    try {
+      const summary = await requestJson<LibraryScanSummary>(
+        `${API_URL}/library/scan`,
+        { method: "POST" },
+      );
+      setScanSummary(summary);
+      await refreshLibrary();
+    } catch (caught) {
+      setLibraryError(
+        caught instanceof Error ? caught.message : "Не удалось просканировать библиотеку.",
+      );
+    } finally {
+      setLibraryBusy(false);
+    }
+  };
 
   const reset = () => {
     setFile(null);
@@ -222,6 +304,13 @@ function App() {
       );
       uploadAccepted = true;
       setJob(uploaded.job);
+      refreshLibrary().catch((caught: unknown) => {
+        setLibraryError(
+          caught instanceof Error
+            ? caught.message
+            : "Не удалось обновить список документов.",
+        );
+      });
 
       let current = uploaded.job;
       while (current.status !== "failed" && current.status !== "completed"
@@ -235,6 +324,13 @@ function App() {
       }
 
       setStage(getStage(current));
+      refreshLibrary().catch((caught: unknown) => {
+        setLibraryError(
+          caught instanceof Error
+            ? caught.message
+            : "Не удалось обновить список документов.",
+        );
+      });
       if (current.status === "failed") {
         setError({
           title:
@@ -288,20 +384,103 @@ function App() {
       </header>
 
       <section className="intro">
-        <div className="eyebrow"><span className="eyebrow-dot" /> MVP · DOCUMENT INGESTION</div>
-        <h1>Загрузите документ.<br /><span>Получите знания.</span></h1>
+        <div className="eyebrow"><span className="eyebrow-dot" /> MVP · PERSONAL RESEARCH LIBRARY</div>
+        <h1>Найдите нужное<br /><span>в своих статьях.</span></h1>
         <p>
-          Проверьте обработку PDF и DOCX: от чтения текста до извлечения материалов,
-          процессов и других сущностей.
+          Индексируйте локальные PDF-статьи, отслеживайте обработку и открывайте
+          оригиналы из собственной исследовательской библиотеки.
         </p>
+      </section>
+
+      <section className="library-panel" aria-label="Личная библиотека статей">
+        <div className="section-heading">
+          <div>
+            <span className="section-kicker">КОЛЛЕКЦИЯ</span>
+            <h2>Статьи из папки</h2>
+          </div>
+          <button
+            className="library-scan-button"
+            type="button"
+            onClick={scanLibrary}
+            disabled={libraryBusy}
+          >
+            {libraryBusy ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}
+            {libraryBusy ? "Сканируем…" : "Сканировать папку"}
+          </button>
+        </div>
+        <p className="library-description">
+          Backend читает PDF из настроенной папки и извлекает текст без вызовов LLM.
+          LLM используется только для файла, загруженного через форму ниже.
+        </p>
+        {libraryError && <p className="library-error" role="alert">{libraryError}</p>}
+        {scanSummary && (
+          <p className="library-summary" role="status">
+            Найдено: {scanSummary.discovered} · в очереди: {scanSummary.queued} ·
+            изменено: {scanSummary.changed} · без изменений: {scanSummary.unchanged}
+            {scanSummary.skipped_busy > 0 && ` · занято: ${scanSummary.skipped_busy}`}
+            {scanSummary.errors.length > 0 && ` · ошибок: ${scanSummary.errors.length}`}
+          </p>
+        )}
+        {library.length === 0 ? (
+          <p className="library-empty">Документов пока нет. Нажмите «Сканировать папку».</p>
+        ) : (
+          <ul className="library-list">
+            {library.map((document) => (
+              <li className="library-item" key={document.id}>
+                <FileText className="library-file-icon" size={17} />
+                <div className="library-item-info">
+                  <strong>{document.original_filename}</strong>
+                  <span>
+                    {document.source_type === "library"
+                      ? document.library_relative_path
+                      : "Загружено через интерфейс"}
+                  </span>
+                </div>
+                <span className={`library-status ${document.job_status === "failed" ? "library-status-error" : ""}`}>
+                  {!document.source_available
+                    ? "Файл отсутствует"
+                    : document.job_status === "completed"
+                      ? "Текст индексирован"
+                      : document.job_status === "awaiting_persistence"
+                        ? "Извлечение завершено"
+                        : document.job_status === "failed"
+                          ? "Ошибка обработки"
+                          : document.job_status === "queued" || document.job_status === "processing"
+                            ? "Обрабатывается"
+                            : "Ожидает индексации"}
+                </span>
+                {document.source_available && (
+                  <a
+                    className="library-open-link"
+                    href={`${API_URL}/documents/${document.id}/download`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Открыть
+                  </a>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {libraryHasMore && (
+          <button
+            className="library-scan-button"
+            type="button"
+            onClick={loadMoreLibrary}
+            disabled={libraryLoadingMore}
+          >
+            {libraryLoadingMore ? "Загружаем…" : "Показать ещё статьи"}
+          </button>
+        )}
       </section>
 
       <section className="workspace" aria-label="Загрузка документа">
         <div className="upload-panel">
           <div className="section-heading">
             <div>
-              <span className="section-kicker">ШАГ 01</span>
-              <h2>Новый документ</h2>
+              <span className="section-kicker">ОТДЕЛЬНАЯ AI-ОБРАБОТКА</span>
+              <h2>Загрузить статью</h2>
             </div>
             <span className="format-badge"><FileText size={14} /> PDF · DOCX</span>
           </div>
@@ -370,12 +549,12 @@ function App() {
               {busy ? (
                 <><LoaderCircle className="spin" size={18} /> Обрабатываем документ…</>
               ) : (
-                <>Загрузить и обработать <ChevronRight size={18} /></>
+                <>Запустить AI-обработку <ChevronRight size={18} /></>
               )}
             </button>
             <div className="privacy-note">
               <CircleHelp size={14} />
-              Принимаются PDF и DOCX. DOCX конвертируется в PDF перед обработкой; оригинал сохраняется.
+              LLM запускается только для выбранного здесь файла. Статьи из папки индексируются без LLM.
             </div>
           </form>
         </div>

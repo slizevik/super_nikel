@@ -10,6 +10,11 @@ def test_document_storage_supports_pdf_and_docx() -> None:
     assert {"original_file", "sha256", "category", "source_metadata"} <= set(
         table.columns.keys()
     )
+    assert {
+        "source_type",
+        "library_relative_path",
+    } <= set(table.columns.keys())
+    assert table.columns["original_file"].nullable
     format_constraint = next(
         check
         for check in table.constraints

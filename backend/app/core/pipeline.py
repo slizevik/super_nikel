@@ -20,6 +20,7 @@ class PipelineStep(StrEnum):
     EXTRACTING_ENTITIES = "extracting_entities"
     VALIDATING_EXTRACTION = "validating_extraction"
     AWAITING_PERSISTENCE = "awaiting_persistence"
+    INDEXED = "indexed"
     CONFIGURATION_ERROR = "llm_configuration"
     PARSING_ERROR = "pdf_parsing_failed"
     IMAGE_ERROR = "image_description_failed"
@@ -51,3 +52,11 @@ def transition_job(job, status: IngestionStatus) -> None:
             f"Invalid ingestion status transition: {current.value} -> {status.value}"
         )
     job.status = status.value
+
+
+def complete_indexing_job(job) -> None:
+    if IngestionStatus(job.status) != IngestionStatus.PROCESSING:
+        raise ValueError(
+            "Only a processing library document can complete indexing."
+        )
+    job.status = IngestionStatus.COMPLETED.value

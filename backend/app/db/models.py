@@ -29,6 +29,17 @@ class Document(Base):
     __table_args__ = (
         CheckConstraint("file_size_bytes > 0", name="ck_documents_file_size_positive"),
         CheckConstraint(
+            "(source_type = 'upload' AND original_file IS NOT NULL "
+            "AND library_relative_path IS NULL) OR "
+            "(source_type = 'library' AND original_file IS NULL "
+            "AND library_relative_path IS NOT NULL)",
+            name="ck_documents_source_storage",
+        ),
+        UniqueConstraint(
+            "library_relative_path",
+            name="uq_documents_library_relative_path",
+        ),
+        CheckConstraint(
             "mime_type IN ("
             "'application/pdf', "
             "'application/vnd.openxmlformats-officedocument.wordprocessingml.document'"
@@ -52,7 +63,11 @@ class Document(Base):
     published_at: Mapped[date | None] = mapped_column(Date)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    original_file: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    source_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'upload'")
+    )
+    library_relative_path: Mapped[str | None] = mapped_column(String(1024))
+    original_file: Mapped[bytes | None] = mapped_column(LargeBinary)
     source_metadata: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )

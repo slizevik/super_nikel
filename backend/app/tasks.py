@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import Callable
 from datetime import datetime, timezone
 from uuid import UUID
@@ -6,7 +7,12 @@ import structlog
 from celery import shared_task
 
 from app.core.config import get_settings
-from app.core.pipeline import IngestionStatus, PipelineStep, transition_job
+from app.core.pipeline import (
+    IngestionStatus,
+    PipelineStep,
+    complete_indexing_job,
+    transition_job,
+)
 from app.db.models import Document, IngestionJob
 from app.db.session import SessionLocal
 from app.schemas.extraction import (
@@ -27,7 +33,13 @@ from app.services.llm.budget import TokenBudget
 from app.services.llm.factory import create_llm_provider
 from app.services.parsed_document_storage import (
     save_model_response,
+    save_parsed_images,
     save_parsed_markdown,
+)
+from app.services.library_scanner import (
+    LibraryConfigurationError,
+    LibraryFileError,
+    resolve_library_file,
 )
 from app.services.document_conversion import (
     DOCX_MIME_TYPE,
@@ -85,9 +97,18 @@ def _parse_document(pdf_bytes: bytes) -> ParsedDocument:
 def _describe_images(
     provider: LLMProvider,
     parsed_document: ParsedDocument,
+    maximum_images: int,
 ) -> list[ImageDescription]:
     descriptions: list[ImageDescription] = []
-    for image in parsed_document.images:
+    selected_images = parsed_document.images[:maximum_images]
+    skipped_images = len(parsed_document.images) - len(selected_images)
+    if skipped_images:
+        logger.info(
+            "image_analysis_limit_applied",
+            selected_images=len(selected_images),
+            skipped_images=skipped_images,
+        )
+    for image in selected_images:
         try:
             description = provider.describe_image(
                 ImageInput(
@@ -240,7 +261,39 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
         task_logger.info("ingestion_job_started", attempt=job.attempt)
 
         try:
-            pdf_bytes = document.original_file
+            is_library_document = (
+                getattr(document, "source_type", "upload") == "library"
+            )
+            if is_library_document:
+                settings = get_settings()
+                try:
+                    library_path = resolve_library_file(
+                        settings.library_root,
+                        document.library_relative_path or "",
+                    )
+                    pdf_bytes = library_path.read_bytes()
+                except (LibraryConfigurationError, LibraryFileError, OSError) as error:
+                    raise PipelineFailure(
+                        "LIBRARY_FILE_UNAVAILABLE",
+                        PipelineStep.PARSING_ERROR,
+                        "The indexed library file is unavailable or outside "
+                        "the configured library.",
+                    ) from error
+                if hashlib.sha256(pdf_bytes).hexdigest() != document.sha256:
+                    raise PipelineFailure(
+                        "LIBRARY_FILE_CHANGED",
+                        PipelineStep.PARSING_ERROR,
+                        "The library file changed after scanning. "
+                        "Scan the library again.",
+                    )
+            else:
+                pdf_bytes = document.original_file
+                if pdf_bytes is None:
+                    raise PipelineFailure(
+                        "DOCUMENT_SOURCE_MISSING",
+                        PipelineStep.PARSING_ERROR,
+                        "The uploaded document has no stored file content.",
+                    )
             if is_docx:
                 settings = get_settings()
                 try:
@@ -290,8 +343,43 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
                 path=str(parsed_markdown_path),
                 character_count=len(parsed_document.markdown),
             )
+            try:
+                persisted_image_paths = save_parsed_images(
+                    [
+                        (image.image_id, image.content)
+                        for image in parsed_document.images
+                    ],
+                    document_uuid,
+                    get_settings().parsed_documents_dir,
+                )
+            except OSError as error:
+                raise PipelineFailure(
+                    "PARSED_IMAGES_SAVE_FAILED",
+                    PipelineStep.PARSED_DOCUMENT_SAVE_ERROR,
+                    "Could not save extracted PDF figures.",
+                ) from error
+            document_manifest = dict(parsed_document.manifest)
+            for image_metadata in document_manifest.get("images", []):
+                image_path = persisted_image_paths.get(
+                    image_metadata.get("image_id", "")
+                )
+                if image_path is not None:
+                    image_metadata["stored_path"] = image_path
             job.extracted_text = parsed_document.markdown
-            job.document_manifest = parsed_document.manifest
+            job.document_manifest = document_manifest
+            if is_library_document:
+                complete_indexing_job(job)
+                _set_step(job, PipelineStep.INDEXED, 100)
+                job.finished_at = datetime.now(timezone.utc)
+                job.error_code = None
+                job.error_message = None
+                session.commit()
+                task_logger.info(
+                    "library_document_indexed",
+                    status=job.status,
+                    character_count=len(parsed_document.markdown),
+                )
+                return
             _set_step(job, PipelineStep.DESCRIBING_IMAGES, 35)
             session.commit()
 
@@ -314,7 +402,11 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
                 ) from error
 
             image_descriptions = (
-                _describe_images(provider, parsed_document)
+                _describe_images(
+                    provider,
+                    parsed_document,
+                    get_settings().max_images_for_llm,
+                )
                 if get_settings().analyze_document_images
                 else []
             )

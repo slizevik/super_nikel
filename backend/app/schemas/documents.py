@@ -34,9 +34,18 @@ class DocumentResponse(BaseModel):
     published_at: date | None
     file_size_bytes: int
     sha256: str
+    source_type: str
+    library_relative_path: str | None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class LibraryDocumentResponse(DocumentResponse):
+    source_available: bool
+    job_status: str | None
+    current_step: str | None
+    error_message: str | None
 
 
 class DocumentUploadResponse(BaseModel):
@@ -58,3 +67,12 @@ class JobStatusResponse(IngestionJobResponse):
 class HealthResponse(BaseModel):
     status: str
     services: dict[str, str]
+
+
+class LibraryScanResponse(BaseModel):
+    discovered: int
+    queued: int
+    changed: int
+    unchanged: int
+    skipped_busy: int
+    errors: list[str]

@@ -28,6 +28,18 @@ entity extraction finishes or reports the failing pipeline stage. The current
 pipeline stops at `awaiting_persistence`; this means extraction succeeded, but
 entities have not yet been written to Neo4j.
 
+To scan a local PDF library, set `LIBRARY_ROOT` in the repository `.env` to the
+host folder (for example, `C:\develop\articles`) before starting Compose. The
+folder is mounted read-only into the API and worker. Use **Сканировать папку**
+in the UI; library PDFs are parsed without LLM calls. PyMuPDF orders text by
+page geometry (top-to-bottom in the left column, then the right); Docling
+detects and crops figures. All available extracted figures are saved under
+`PARSED_DOCUMENTS_DIR/<document_id>_images`. Set `PARSED_DOCUMENTS_DIR` in
+`.env` to the desired host directory; Compose mounts that directory at
+`/processed` in the worker. The individual upload form continues to run the
+current LLM extraction pipeline, but image analysis is limited by
+`MAX_IMAGES_FOR_LLM` (default 8).
+
 The default upload limit is 50 MiB and can be changed with
 `MAX_UPLOAD_SIZE_BYTES`. Configure local passwords in `.env` before exposing
 the services beyond the local machine.

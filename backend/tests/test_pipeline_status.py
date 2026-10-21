@@ -1,6 +1,10 @@
 import pytest
 
-from app.core.pipeline import IngestionStatus, transition_job
+from app.core.pipeline import (
+    IngestionStatus,
+    complete_indexing_job,
+    transition_job,
+)
 
 
 def test_pipeline_allows_queue_to_processing_and_pending_persistence() -> None:
@@ -24,3 +28,11 @@ def test_terminal_job_cannot_transition_back_to_processing() -> None:
 
     with pytest.raises(ValueError, match="failed -> processing"):
         transition_job(job, IngestionStatus.PROCESSING)
+
+
+def test_library_indexing_can_complete_without_graph_persistence() -> None:
+    job = type("Job", (), {"status": IngestionStatus.PROCESSING.value})()
+
+    complete_indexing_job(job)
+
+    assert job.status == IngestionStatus.COMPLETED.value

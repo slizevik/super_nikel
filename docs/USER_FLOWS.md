@@ -14,6 +14,30 @@
 6. Successful extraction currently ends at `awaiting_persistence`; no graph
    write or terminal success is claimed.
 
+## Available: scan and index a read-only article library
+
+1. The operator configures `LIBRARY_ROOT` in `.env`; Docker mounts that host
+   directory into the API and worker as `/library:ro`.
+2. The UI calls `POST /api/v1/library/scan`. The backend recursively finds
+   valid PDFs, stores their relative paths and SHA-256 hashes, and creates jobs
+   for new or changed files.
+3. The worker reads each source PDF from the mounted directory, extracts
+   coordinate-ordered text with PyMuPDF, and detects/crops figures with Docling.
+   It stores extracted text and figure files and marks the indexing job
+   `completed`; it does not call an LLM or copy the original PDF into PostgreSQL.
+4. Repeated scans skip unchanged documents. Changed documents are re-indexed;
+   missing files remain listed and are marked unavailable.
+5. The UI lists library documents, their source availability, and the latest
+   processing status. Original library PDFs open from the backend. Separately
+   uploaded documents are not included in this library listing.
+
+The LLM remains limited to single PDF/DOCX files explicitly uploaded through
+the upload form. For those uploads, all available figure files are retained,
+but only up to `MAX_IMAGES_FOR_LLM` (default 8) receive LLM image analysis.
+Markdown and extracted figures are written under `PARSED_DOCUMENTS_DIR`; in
+Compose, the worker writes to `/processed`, mounted from the configured host
+directory.
+
 ## Planned: human validation and graph persistence
 
 The desired workflow requires a review queue for extracted facts, evidence,

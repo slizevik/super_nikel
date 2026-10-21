@@ -7,7 +7,7 @@ from zipfile import BadZipFile, ZipFile
 
 import structlog
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,8 +24,14 @@ from app.schemas.documents import (
     DocumentResponse,
     DocumentUploadResponse,
     IngestionJobResponse,
+    LibraryDocumentResponse,
 )
 from app.tasks import parse_pdf_document
+from app.services.library_scanner import (
+    LibraryConfigurationError,
+    LibraryFileError,
+    resolve_library_file,
+)
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -106,6 +112,8 @@ async def upload_document(
         category=normalized_category,
         file_size_bytes=len(document_bytes),
         sha256=hashlib.sha256(document_bytes).hexdigest(),
+        source_type="upload",
+        library_relative_path=None,
         original_file=document_bytes,
         authors=[],
     )
@@ -153,24 +161,54 @@ async def upload_document(
     return DocumentUploadResponse(document=document, job=job)
 
 
-@router.get("", response_model=list[DocumentResponse])
+@router.get("", response_model=list[LibraryDocumentResponse])
 def list_documents(
     limit: int = 20,
     offset: int = 0,
     session: Session = Depends(get_db),
-) -> list[DocumentResponse]:
+) -> list[LibraryDocumentResponse]:
     if not 1 <= limit <= 100 or offset < 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="limit must be between 1 and 100 and offset must be non-negative.",
         )
-    documents = session.scalars(
-        select(Document)
+    latest_job_id = (
+        select(IngestionJob.id)
+        .where(IngestionJob.document_id == Document.id)
+        .order_by(IngestionJob.created_at.desc())
+        .limit(1)
+        .correlate(Document)
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(Document, IngestionJob)
+        .outerjoin(IngestionJob, IngestionJob.id == latest_job_id)
+        .where(Document.source_type == "library")
         .order_by(Document.created_at.desc())
         .limit(limit)
         .offset(offset)
-    )
-    return [DocumentResponse.model_validate(document) for document in documents]
+    ).all()
+    settings = get_settings()
+    response: list[LibraryDocumentResponse] = []
+    for document, job in rows:
+        source_available = True
+        try:
+            resolve_library_file(
+                settings.library_root,
+                document.library_relative_path or "",
+            )
+        except (LibraryConfigurationError, LibraryFileError, OSError):
+            source_available = False
+        response.append(
+            LibraryDocumentResponse(
+                **DocumentResponse.model_validate(document).model_dump(),
+                source_available=source_available,
+                job_status=job.status if job is not None else None,
+                current_step=job.current_step if job is not None else None,
+                error_message=job.error_message if job is not None else None,
+            )
+        )
+    return response
 
 
 @router.get("/{document_id}", response_model=DocumentDetailResponse)
@@ -209,6 +247,27 @@ def download_document(
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found.")
     filename = quote(document.original_filename, safe="")
+    if document.source_type == "library":
+        try:
+            library_path = resolve_library_file(
+                get_settings().library_root,
+                document.library_relative_path or "",
+            )
+        except (LibraryConfigurationError, LibraryFileError, OSError) as error:
+            raise HTTPException(
+                status_code=410,
+                detail="The source file is no longer available in the library.",
+            ) from error
+        return FileResponse(
+            library_path,
+            media_type=document.mime_type,
+            filename=document.original_filename,
+        )
+    if document.original_file is None:
+        raise HTTPException(
+            status_code=410,
+            detail="The uploaded document content is no longer available.",
+        )
     return Response(
         content=document.original_file,
         media_type=document.mime_type,

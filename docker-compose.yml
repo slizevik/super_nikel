@@ -48,10 +48,12 @@ x-backend-environment: &backend-environment
   LIBREOFFICE_TIMEOUT_SEC: ${LIBREOFFICE_TIMEOUT_SEC:-180}
   CONVERTED_PDF_DIR: ${CONVERTED_PDF_DIR:-./data/ingestion/converted}
   ANALYZE_DOCUMENT_IMAGES: ${ANALYZE_DOCUMENT_IMAGES:-true}
+  MAX_IMAGES_FOR_LLM: ${MAX_IMAGES_FOR_LLM:-8}
   LOG_DIR: /app/logs
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_MAX_BYTES: ${LOG_MAX_BYTES:-10485760}
   LOG_BACKUP_COUNT: ${LOG_BACKUP_COUNT:-5}
+  LIBRARY_ROOT: /library
 
 x-rotating-logging: &rotating-logging
   driver: json-file
@@ -155,6 +157,10 @@ services:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
       - ./logs:/app/logs
+      - type: bind
+        source: "${LIBRARY_ROOT:-./data/library}"
+        target: /library
+        read_only: true
     networks:
       - nikelpower
     depends_on:
@@ -184,11 +190,18 @@ services:
     environment:
       <<: *backend-environment
       MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-52428800}
+      PARSED_DOCUMENTS_DIR: /processed
     volumes:
       - docling_cache:/root/.cache
       - ./logs:/app/logs
-      - ./data/processed:/app/backend/data/processed
       - ./data/ingestion/converted:/app/backend/data/ingestion/converted
+      - type: bind
+        source: "${PARSED_DOCUMENTS_DIR:-./data/processed}"
+        target: /processed
+      - type: bind
+        source: "${LIBRARY_ROOT:-./data/library}"
+        target: /library
+        read_only: true
     command:
       - celery
       - -A

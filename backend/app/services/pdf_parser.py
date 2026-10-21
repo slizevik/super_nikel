@@ -32,7 +32,132 @@ class ParsedDocument:
     manifest: dict[str, Any]
 
 
+def _text_blocks(page: Any) -> list[tuple[float, float, float, float, str]]:
+    blocks: list[tuple[float, float, float, float, str]] = []
+    for block in page.get_text("blocks"):
+        if len(block) < 7 or block[6] != 0:
+            continue
+        text = str(block[4]).strip()
+        if text:
+            blocks.append(
+                (
+                    float(block[0]),
+                    float(block[1]),
+                    float(block[2]),
+                    float(block[3]),
+                    text,
+                )
+            )
+    return blocks
+
+
+def _column_gutter(
+    blocks: list[tuple[float, float, float, float, str]],
+    page_width: float,
+) -> float | None:
+    candidates = sorted(
+        {
+            block[2]
+            for block in blocks
+            if block[2] - block[0] < page_width * 0.72
+        }
+    )
+    best_gutter: float | None = None
+    best_gap = page_width * 0.035
+    for gutter in candidates:
+        if not page_width * 0.25 <= gutter <= page_width * 0.75:
+            continue
+        left = [
+            block
+            for block in blocks
+            if block[2] <= gutter
+            and block[2] - block[0] < page_width * 0.72
+        ]
+        right = [
+            block
+            for block in blocks
+            if block[0] >= gutter
+            and block[2] - block[0] < page_width * 0.72
+        ]
+        if not left or not right:
+            continue
+        nearest_right = min(block[0] for block in right)
+        gap = nearest_right - gutter
+        if gap > best_gap:
+            best_gutter = gutter
+            best_gap = gap
+    return best_gutter
+
+
+def _ordered_page_text(page: Any) -> str:
+    blocks = _text_blocks(page)
+    if not blocks:
+        return ""
+
+    page_width = float(page.rect.width)
+    gutter = _column_gutter(blocks, page_width)
+    if gutter is None:
+        ordered = sorted(blocks, key=lambda block: (block[1], block[0]))
+        return "\n\n".join(block[4] for block in ordered)
+
+    spanning = sorted(
+        (
+            block
+            for block in blocks
+            if block[2] - block[0] >= page_width * 0.72
+        ),
+        key=lambda block: (block[1], block[0]),
+    )
+    column_blocks = [
+        block
+        for block in blocks
+        if block[2] - block[0] < page_width * 0.72
+    ]
+    ordered: list[tuple[float, float, float, float, str]] = []
+    previous_y = float("-inf")
+    for spanning_block in spanning:
+        band = [
+            block
+            for block in column_blocks
+            if previous_y <= (block[1] + block[3]) / 2 < spanning_block[1]
+        ]
+        ordered.extend(
+            sorted(
+                (block for block in band if block[0] < gutter),
+                key=lambda block: (block[1], block[0]),
+            )
+        )
+        ordered.extend(
+            sorted(
+                (block for block in band if block[0] >= gutter),
+                key=lambda block: (block[1], block[0]),
+            )
+        )
+        ordered.append(spanning_block)
+        previous_y = spanning_block[3]
+
+    remaining = [
+        block
+        for block in column_blocks
+        if (block[1] + block[3]) / 2 >= previous_y
+    ]
+    ordered.extend(
+        sorted(
+            (block for block in remaining if block[0] < gutter),
+            key=lambda block: (block[1], block[0]),
+        )
+    )
+    ordered.extend(
+        sorted(
+            (block for block in remaining if block[0] >= gutter),
+            key=lambda block: (block[1], block[0]),
+        )
+    )
+    return "\n\n".join(block[4] for block in ordered)
+
+
 def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
+    import pymupdf
     from docling.document_converter import DocumentConverter
 
     try:
@@ -41,7 +166,16 @@ def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
             pdf_path.write_bytes(pdf_bytes)
             result = DocumentConverter().convert(pdf_path)
             document = result.document
-            markdown = document.export_to_markdown().strip()
+            with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf_document:
+                markdown = "\n\n".join(
+                    page_text
+                    for page in pdf_document
+                    if (page_text := _ordered_page_text(page))
+                ).strip()
+            text_extractor = "pymupdf_ordered_blocks"
+            if not markdown:
+                markdown = document.export_to_markdown().strip()
+                text_extractor = "docling_markdown"
             images: list[ParsedImage] = []
             image_manifest: list[dict[str, Any]] = []
 
@@ -116,6 +250,7 @@ def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
             manifest = {
                 "format": "pdf",
                 "page_count": len(document.pages),
+                "text_extractor": text_extractor,
                 "image_count": len(images),
                 "detected_picture_count": len(document.pictures),
                 "skipped_picture_count": len(document.pictures) - len(images),
