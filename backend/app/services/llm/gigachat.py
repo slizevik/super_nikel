@@ -9,6 +9,7 @@ import structlog
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.schemas.answers import AnswerDraft
 from app.schemas.extraction import ExtractionCandidates, ImageDescription
 from app.services.llm.base import (
     ImageInput,
@@ -16,6 +17,7 @@ from app.services.llm.base import (
     LLMResponseError,
     TokenBudgetExceeded,
 )
+from app.services.llm.answering import ANSWERING_INSTRUCTIONS
 from app.services.llm.budget import TokenBudget, TokenReservation
 from app.services.llm.prompts import (
     ENTITY_EXTRACTION_INSTRUCTIONS,
@@ -49,6 +51,31 @@ class GigaChatProvider:
         self._token_budget = token_budget
         self._access_token: str | None = None
         self._token_expires_at = 0.0
+
+    def answer_question(self, question: str, context: str) -> AnswerDraft:
+        user_content = (
+            f"User question:\n{question}\n\n"
+            f"Retrieved library excerpts (JSON):\n{context}"
+        )
+        response, _reservation = self._chat_completion(
+            model=self._text_model,
+            operation="answer_question",
+            messages=[
+                {"role": "system", "content": ANSWERING_INSTRUCTIONS},
+                {"role": "user", "content": user_content},
+            ],
+            estimated_input_tokens=TokenBudget.estimate_text_tokens(
+                ANSWERING_INSTRUCTIONS + user_content
+            ),
+            preferred_response_tokens=TokenBudget.MAX_ANSWER_RESPONSE_TOKENS,
+            temperature=0.4,
+        )
+        try:
+            return AnswerDraft.model_validate(self._parse_json_response(response))
+        except ValidationError as error:
+            raise LLMResponseError(
+                "GigaChat response did not match the answer schema."
+            ) from error
 
     def describe_image(
         self, image: ImageInput, document_context: str
@@ -226,21 +253,25 @@ class GigaChatProvider:
         messages: list[dict[str, object]],
         estimated_input_tokens: int,
         preferred_response_tokens: int,
+        temperature: float | None = None,
     ) -> tuple[str, TokenReservation]:
         reservation, max_output_tokens = self._token_budget.reserve(
             estimated_input_tokens,
             min(preferred_response_tokens, self._max_output_tokens),
         )
+        request_body: dict[str, object] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "max_tokens": max_output_tokens,
+        }
+        if temperature is not None:
+            request_body["temperature"] = temperature
         try:
             response = httpx.post(
                 f"{self._api_base_url}/chat/completions",
                 headers=self._authorization_headers(),
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "stream": False,
-                    "max_tokens": max_output_tokens,
-                },
+                json=request_body,
                 timeout=self._timeout,
             )
         except httpx.TimeoutException as error:

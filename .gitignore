@@ -3,6 +3,10 @@
 venv/
 env/
 .env/
+docs/
+data/
+.agent-logs/
+
 # Python cache and build artifacts
 __pycache__/
 *.py[cod]

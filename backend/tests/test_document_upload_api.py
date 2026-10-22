@@ -135,7 +135,10 @@ def test_document_list_filters_out_uploaded_documents(monkeypatch) -> None:
     monkeypatch.setattr(
         documents,
         "get_settings",
-        lambda: SimpleNamespace(library_root="C:/articles"),
+        lambda: SimpleNamespace(
+            library_root="C:/articles",
+            library_display_root="C:/articles",
+        ),
     )
     monkeypatch.setattr(
         documents,

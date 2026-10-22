@@ -8,12 +8,14 @@ import structlog
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.schemas.answers import AnswerDraft
 from app.schemas.extraction import ExtractionCandidates, ImageDescription
 from app.services.llm.base import (
     ImageInput,
     LLMConfigurationError,
     LLMResponseError,
 )
+from app.services.llm.answering import ANSWERING_INSTRUCTIONS
 from app.services.llm.budget import TokenBudget, TokenReservation
 from app.services.llm.prompts import (
     ENTITY_EXTRACTION_INSTRUCTIONS,
@@ -36,6 +38,31 @@ class YandexGPTProvider:
         self._base_url = settings.yandex_cloud_base_url.rstrip("/")
         self._timeout = httpx.Timeout(settings.llm_request_timeout_seconds)
         self._token_budget = token_budget
+
+    def answer_question(self, question: str, context: str) -> AnswerDraft:
+        user_content = (
+            f"User question:\n{question}\n\n"
+            f"Retrieved library excerpts (JSON):\n{context}"
+        )
+        response, _reservation = self._chat_completion(
+            model=self._text_model,
+            operation="answer_question",
+            messages=[
+                {"role": "system", "content": ANSWERING_INSTRUCTIONS},
+                {"role": "user", "content": user_content},
+            ],
+            estimated_input_tokens=TokenBudget.estimate_text_tokens(
+                ANSWERING_INSTRUCTIONS + user_content
+            ),
+            preferred_response_tokens=TokenBudget.MAX_ANSWER_RESPONSE_TOKENS,
+            temperature=0.4,
+        )
+        try:
+            return AnswerDraft.model_validate(self._parse_json_response(response))
+        except ValidationError as error:
+            raise LLMResponseError(
+                "Yandex GPT response did not match the answer schema."
+            ) from error
 
     def describe_image(
         self, image: ImageInput, document_context: str
@@ -138,6 +165,7 @@ class YandexGPTProvider:
         messages: list[dict],
         estimated_input_tokens: int,
         preferred_response_tokens: int,
+        temperature: float = 0.1,
     ) -> tuple[str, TokenReservation]:
         reservation, max_output_tokens = self._token_budget.reserve(
             estimated_input_tokens, preferred_response_tokens
@@ -154,7 +182,7 @@ class YandexGPTProvider:
                 json={
                     "model": model_uri,
                     "messages": messages,
-                    "temperature": 0.1,
+                    "temperature": temperature,
                     "response_format": {"type": "json_object"},
                     "max_tokens": max_output_tokens,
                 },

@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     libreoffice_timeout_sec: int = Field(default=180, gt=0)
     converted_pdf_dir: str = "./data/ingestion/converted"
     library_root: Path | None = None
+    library_display_root: str | None = None
     max_images_for_llm: int = Field(default=8, ge=0)
     analyze_document_images: bool = True
     max_upload_size_bytes: int = Field(default=50 * 1024 * 1024, gt=0)

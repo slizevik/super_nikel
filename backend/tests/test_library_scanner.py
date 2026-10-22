@@ -7,6 +7,7 @@ from app.services.library_scanner import (
     LibraryConfigurationError,
     LibraryFileError,
     classify_scanned_file,
+    format_library_source_path,
     resolve_library_file,
     scan_library,
 )
@@ -71,3 +72,17 @@ def test_library_path_must_stay_inside_root(tmp_path: Path) -> None:
             resolve_library_file(tmp_path, str(outside))
     finally:
         outside.unlink(missing_ok=True)
+
+
+def test_library_source_path_uses_host_windows_path() -> None:
+    assert format_library_source_path(
+        r"C:\develop\articles",
+        "subfolder/paper.pdf",
+    ) == r"C:\develop\articles\subfolder\paper.pdf"
+
+
+def test_library_source_path_uses_host_posix_path() -> None:
+    assert format_library_source_path(
+        "/home/user/articles",
+        "subfolder/paper.pdf",
+    ) == "/home/user/articles/subfolder/paper.pdf"

@@ -43,6 +43,7 @@ class DocumentResponse(BaseModel):
 
 class LibraryDocumentResponse(DocumentResponse):
     source_available: bool
+    source_path: str | None
     job_status: str | None
     current_step: str | None
     error_message: str | None

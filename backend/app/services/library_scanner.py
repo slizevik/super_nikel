@@ -1,6 +1,8 @@
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 
 from app.services.document_conversion import PDF_SIGNATURE
 
@@ -65,6 +67,15 @@ def resolve_library_file(root: Path | None, relative_path: str) -> Path:
     if not candidate.is_file() or candidate.suffix.casefold() != ".pdf":
         raise LibraryFileError("Library document is not an available PDF file.")
     return candidate
+
+
+def format_library_source_path(root: str | None, relative_path: str) -> str | None:
+    if root is None:
+        return None
+    relative_parts = PurePosixPath(relative_path).parts
+    if re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", root):
+        return str(PureWindowsPath(root, *relative_parts))
+    return str(Path(root).joinpath(*relative_parts))
 
 
 def scan_library(root: Path | None) -> LibraryScan:

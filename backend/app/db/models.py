@@ -105,6 +105,14 @@ class IngestionJob(Base):
             name="ck_ingestion_jobs_tokens_consumed_nonnegative",
         ),
         Index("ix_ingestion_jobs_status_created_at", "status", "created_at"),
+        Index(
+            "ix_ingestion_jobs_extracted_text_fts",
+            text("to_tsvector('simple', COALESCE(extracted_text, ''))"),
+            postgresql_using="gin",
+            postgresql_where=text(
+                "status = 'completed' AND extracted_text IS NOT NULL"
+            ),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

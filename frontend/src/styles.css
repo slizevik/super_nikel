@@ -55,6 +55,31 @@ button:focus-visible, input:focus-visible { outline: 3px solid #a4c8ae; outline-
 .library-open-link { color: var(--green); font-size: 10px; text-decoration: none; white-space: nowrap; }
 .library-open-link:hover { text-decoration: underline; }
 
+.ask-panel { margin: 0 0 18px; padding: 24px 25px; background: var(--white); border: 1px solid #e9ece7; border-radius: 15px; box-shadow: 0 9px 32px rgb(33 49 38 / 3%); }
+.ask-panel .section-heading h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-family: Manrope, sans-serif; font-size: 20px; }
+.ask-panel .section-heading h2 svg { color: var(--green); }
+.ask-description { margin: 12px 0; color: #7c8780; font-size: 12px; line-height: 1.5; }
+.ask-form { display: flex; align-items: flex-end; gap: 12px; }
+.question-input { width: 100%; min-height: 86px; resize: vertical; padding: 12px; color: #28372e; background: #fff; border: 1px solid #dfe5df; border-radius: 7px; font: inherit; font-size: 13px; line-height: 1.5; }
+.question-input::placeholder { color: #a2aaa4; }
+.question-input:focus { border-color: #78a285; outline: 3px solid #a4c8ae; outline-offset: 2px; }
+.ask-button { min-width: 124px; min-height: 42px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 8px; padding: 0 15px; border: 0; border-radius: 7px; background: var(--green); color: white; cursor: pointer; font-size: 12px; font-weight: 600; }
+.ask-button:hover:not(:disabled) { background: var(--green-dark); }
+.ask-button:disabled { background: #aebdb1; cursor: not-allowed; }
+.answer-result { margin-top: 22px; padding-top: 18px; border-top: 1px solid #edf0eb; }
+.answer-result h3 { margin: 0 0 9px; font-family: Manrope, sans-serif; font-size: 14px; }
+.answer-text { margin: 0; color: #35443a; font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
+.answer-citations { display: grid; gap: 10px; margin-top: 20px; }
+.citation-card { padding: 12px; border: 1px solid #edf0eb; border-radius: 8px; }
+.citation-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.citation-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.citation-heading strong { overflow: hidden; color: #35443a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.citation-heading span { overflow: hidden; color: #929b94; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.citation-card blockquote { margin: 11px 0 0; padding-left: 10px; border-left: 2px solid #dce8dc; color: #69766d; font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+.path-copy-button { min-height: 30px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; padding: 0 9px; border: 1px solid #dce6dc; border-radius: 6px; background: #f7faf6; color: var(--green); cursor: pointer; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.path-copy-button:hover { background: #eaf2ea; }
+.load-more-button { margin-top: 13px; }
+
 .workspace { display: grid; grid-template-columns: minmax(310px, .88fr) minmax(420px, 1.12fr); gap: 18px; align-items: stretch; }
 .upload-panel, .result-panel { min-width: 0; background: var(--white); border: 1px solid #e9ece7; border-radius: 15px; box-shadow: 0 9px 32px rgb(33 49 38 / 3%); }
 .upload-panel { padding: 27px 27px 23px; }
@@ -166,6 +191,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid #a4c8ae; outline-
   .intro { margin-top: 45px; }
   .workspace { grid-template-columns: 1fr; }
   .result-panel { min-height: 380px; }
+  .ask-form { align-items: stretch; flex-direction: column; }
+  .ask-button { align-self: flex-end; }
 }
 
 @media (max-width: 500px) {
@@ -181,6 +208,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid #a4c8ae; outline-
   .step-label { font-size: 8px; }
   .footer { gap: 12px; font-size: 9px; }
   .library-panel { padding: 19px 16px; }
+  .ask-panel { padding: 20px 16px; }
   .library-item { gap: 7px; }
   .library-status { display: none; }
+  .path-copy-button { padding: 0 7px; font-size: 9px; }
 }

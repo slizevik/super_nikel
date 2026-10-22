@@ -30,6 +30,7 @@ from app.tasks import parse_pdf_document
 from app.services.library_scanner import (
     LibraryConfigurationError,
     LibraryFileError,
+    format_library_source_path,
     resolve_library_file,
 )
 
@@ -203,6 +204,15 @@ def list_documents(
             LibraryDocumentResponse(
                 **DocumentResponse.model_validate(document).model_dump(),
                 source_available=source_available,
+                source_path=format_library_source_path(
+                    settings.library_display_root
+                    or (
+                        str(settings.library_root)
+                        if settings.library_root is not None
+                        else None
+                    ),
+                    document.library_relative_path or "",
+                ),
                 job_status=job.status if job is not None else None,
                 current_step=job.current_step if job is not None else None,
                 error_message=job.error_message if job is not None else None,

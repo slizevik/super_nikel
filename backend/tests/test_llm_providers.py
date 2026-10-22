@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.schemas.answers import AnswerDraft
 from app.schemas.extraction import (
     ExtractionCandidates,
     ExtractionResult,
@@ -70,6 +71,44 @@ def test_provider_factory_rejects_unknown_provider() -> None:
 
     with pytest.raises(LLMConfigurationError, match="gigachat"):
         create_llm_provider(settings, TokenBudget(1000))
+
+
+@pytest.mark.parametrize("provider_kind", ["yandex", "gigachat"])
+def test_llm_providers_return_validated_answers(monkeypatch, provider_kind) -> None:
+    source_id = "e46777b4-0142-42a7-9c52-274cc0a27672"
+    settings = Settings(
+        database_url="postgresql+psycopg://localhost/nikelpower",
+        llm_provider=provider_kind,
+        yandex_cloud_api_key="test-key",
+        yandex_cloud_folder="folder-id",
+        gigachat_credentials="authorization-key",
+    )
+    provider = create_llm_provider(settings, TokenBudget(100_000))
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return (
+            json.dumps(
+                {
+                    "answer": "A supported answer.",
+                    "cited_document_ids": [source_id],
+                }
+            ),
+            None,
+        )
+
+    monkeypatch.setattr(provider, "_chat_completion", fake_completion)
+
+    answer = provider.answer_question(
+        "What does the paper report?",
+        f'[{{"document_id":"{source_id}","excerpt":"The result."}}]',
+    )
+
+    assert isinstance(answer, AnswerDraft)
+    assert answer.cited_document_ids[0].hex == source_id.replace("-", "")
+    assert captured["operation"] == "answer_question"
+    assert captured["temperature"] == 0.4
 
 
 def test_gigachat_provider_exchanges_authorization_key_and_extracts_entities(

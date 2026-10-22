@@ -1,56 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  AlertCircle,
   Check,
-  CheckCircle2,
-  ChevronRight,
-  CircleHelp,
+  Copy,
   FileText,
   FlaskConical,
   LoaderCircle,
   RotateCcw,
-  Upload,
+  Send,
+  Sparkles,
 } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
-const POLL_INTERVAL_MS = 2000;
 const LIBRARY_PAGE_SIZE = 50;
-
-type Entity = {
-  id: string;
-  type: string;
-  label: string;
-  canonical_label: string;
-  aliases: string[];
-  evidence: string;
-};
-
-type IngestionJob = {
-  id: string;
-  status: "queued" | "processing" | "awaiting_persistence" | "completed" | "failed";
-  current_step: string | null;
-  progress_percent: number;
-  error_code: string | null;
-  error_message: string | null;
-  extraction_result: {
-    entities: Entity[];
-    relationships: unknown[];
-    unclassified_entities: { text: string; context: string }[];
-  } | null;
-  tokens_consumed: number;
-  token_budget_limit: number;
-};
-
-type UploadResponse = {
-  document: { id: string; original_filename: string; file_size_bytes: number };
-  job: IngestionJob;
-};
 
 type LibraryDocument = {
   id: string;
   original_filename: string;
-  source_type: "upload" | "library";
-  library_relative_path: string | null;
+  library_relative_path: string;
+  source_path: string | null;
   file_size_bytes: number;
   source_available: boolean;
   job_status: string | null;
@@ -67,96 +34,24 @@ type LibraryScanSummary = {
   errors: string[];
 };
 
-type Stage =
-  | "upload"
-  | "queue"
-  | "parsing"
-  | "images"
-  | "extracting"
-  | "validating"
-  | "done"
-  | "error";
-
-const stageLabels: Record<string, string> = {
-  queued: "В очереди",
-  queued_for_text_extraction: "Задание принято",
-  converting_docx: "Конвертация DOCX в PDF",
-  docx_conversion_failed: "Ошибка конвертации DOCX в PDF",
-  parsing_pdf: "Чтение PDF в Docling",
-  describing_images: "Анализ изображений",
-  extracting_entities: "Извлечение сущностей",
-  validating_extraction: "Проверка результата",
-  awaiting_persistence: "Извлечение завершено",
-  pdf_parsing_failed: "Ошибка чтения PDF в Docling",
-  image_description_failed: "Ошибка анализа изображений",
-  entity_extraction_failed: "Ошибка извлечения сущностей",
-  extraction_validation_failed: "Ошибка проверки результата",
-  llm_configuration: "Ошибка конфигурации LLM",
-  pipeline_failed: "Внутренняя ошибка обработки",
-  worker_enqueue_failed: "Ошибка запуска фонового задания",
+type AnswerCitation = {
+  document_id: string;
+  original_filename: string;
+  library_relative_path: string;
+  source_path: string;
+  excerpt: string;
 };
 
-const errorStageLabels: Record<string, string> = {
-  DOCX_CONVERSION_FAILED: "Ошибка конвертации DOCX в PDF",
-  PDF_PARSING_FAILED: "Ошибка чтения PDF в Docling",
-  IMAGE_DESCRIPTION_FAILED: "Ошибка анализа изображений",
-  ENTITY_EXTRACTION_FAILED: "Ошибка извлечения сущностей",
-  EXTRACTION_VALIDATION_FAILED: "Ошибка проверки извлечённых данных",
-  LLM_CREDENTIALS_MISSING: "Ошибка конфигурации Yandex Cloud AI",
-  TOKEN_LIMIT_EXCEEDED: "Превышен лимит токенов",
-  WORKER_UNAVAILABLE: "Ошибка запуска фонового задания",
-  PIPELINE_INTERNAL_ERROR: "Внутренняя ошибка обработки",
+type AnswerResponse = {
+  answer: string;
+  citations: AnswerCitation[];
 };
-
-const entityTypeLabels: Record<string, string> = {
-  Material: "Материал",
-  Process: "Процесс",
-  Equipment: "Оборудование",
-  Property: "Свойство",
-  Experiment: "Эксперимент",
-  Publication: "Публикация",
-  Document: "Документ",
-  Expert: "Эксперт",
-  Facility: "Предприятие",
-  Condition: "Условие",
-  Country: "Страна",
-  Claim: "Утверждение",
-};
-
-const pipelineSteps: { id: Stage; label: string }[] = [
-  { id: "upload", label: "Загрузка" },
-  { id: "parsing", label: "Подготовка и чтение" },
-  { id: "extracting", label: "Извлечение" },
-  { id: "done", label: "Результат" },
-];
-
-function getStage(job: IngestionJob): Stage {
-  if (job.status === "failed") return "error";
-  if (job.status === "awaiting_persistence" || job.status === "completed") {
-    return "done";
-  }
-  if (job.current_step === "converting_docx") return "parsing";
-  if (job.current_step === "parsing_pdf") return "parsing";
-  if (job.current_step === "describing_images") return "images";
-  if (job.current_step === "extracting_entities") return "extracting";
-  if (job.current_step === "validating_extraction") return "validating";
-  return "queue";
-}
-
-function formatBytes(bytes: number): string {
-  return bytes < 1024 * 1024
-    ? `${Math.max(1, Math.round(bytes / 1024))} КБ`
-    : `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
-}
 
 function readableApiError(payload: unknown): string {
   if (typeof payload === "string") return payload;
   if (payload && typeof payload === "object" && "detail" in payload) {
     const detail = payload.detail;
     if (typeof detail === "string") return detail;
-    if (detail && typeof detail === "object" && "message" in detail) {
-      return String(detail.message);
-    }
     if (Array.isArray(detail)) {
       return detail.map((item) => item.msg ?? "Некорректные данные").join("; ");
     }
@@ -174,29 +69,32 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     );
   }
   const payload: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(readableApiError(payload));
-  }
+  if (!response.ok) throw new Error(readableApiError(payload));
   return payload as T;
 }
 
+function statusLabel(document: LibraryDocument): string {
+  if (!document.source_available) return "Файл отсутствует";
+  if (document.job_status === "completed") return "Текст индексирован";
+  if (document.job_status === "failed") return "Ошибка обработки";
+  if (document.job_status === "queued" || document.job_status === "processing") {
+    return "Индексируется";
+  }
+  return "Ожидает индексации";
+}
+
 function App() {
-  const fileInput = useRef<HTMLInputElement>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [category, setCategory] = useState("Научная статья");
-  const [job, setJob] = useState<IngestionJob | null>(null);
-  const [documentName, setDocumentName] = useState("");
-  const [stage, setStage] = useState<Stage>("upload");
-  const [error, setError] = useState<{ title: string; message: string } | null>(
-    null,
-  );
-  const [busy, setBusy] = useState(false);
   const [library, setLibrary] = useState<LibraryDocument[]>([]);
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [libraryLoadingMore, setLibraryLoadingMore] = useState(false);
   const [libraryError, setLibraryError] = useState("");
   const [libraryHasMore, setLibraryHasMore] = useState(false);
   const [scanSummary, setScanSummary] = useState<LibraryScanSummary | null>(null);
+  const [question, setQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [answer, setAnswer] = useState<AnswerResponse | null>(null);
+  const [answerError, setAnswerError] = useState("");
+  const [copiedDocumentId, setCopiedDocumentId] = useState("");
 
   const refreshLibrary = async () => {
     const documents = await requestJson<LibraryDocument[]>(
@@ -204,24 +102,6 @@ function App() {
     );
     setLibrary(documents);
     setLibraryHasMore(documents.length === LIBRARY_PAGE_SIZE);
-  };
-
-  const loadMoreLibrary = async () => {
-    setLibraryLoadingMore(true);
-    setLibraryError("");
-    try {
-      const documents = await requestJson<LibraryDocument[]>(
-        `${API_URL}/documents?limit=${LIBRARY_PAGE_SIZE}&offset=${library.length}`,
-      );
-      setLibrary((current) => [...current, ...documents]);
-      setLibraryHasMore(documents.length === LIBRARY_PAGE_SIZE);
-    } catch (caught) {
-      setLibraryError(
-        caught instanceof Error ? caught.message : "Не удалось загрузить документы.",
-      );
-    } finally {
-      setLibraryLoadingMore(false);
-    }
   };
 
   useEffect(() => {
@@ -252,126 +132,65 @@ function App() {
     }
   };
 
-  const reset = () => {
-    setFile(null);
-    setJob(null);
-    setDocumentName("");
-    setStage("upload");
-    setError(null);
-    setBusy(false);
-    if (fileInput.current) fileInput.current.value = "";
-  };
-
-  const handleFileChange = (selected: File | undefined) => {
-    setError(null);
-    if (!selected) return;
-    if (!/\.(pdf|docx)$/i.test(selected.name)) {
-      setFile(null);
-      setError({
-        title: "Неподдерживаемый формат",
-        message: "Выберите документ в формате PDF или DOCX.",
-      });
-      return;
-    }
-    setFile(selected);
-  };
-
-  const submitDocument = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!file || busy) return;
-    if (!category.trim()) {
-      setError({
-        title: "Не указана категория",
-        message: "Заполните категорию документа.",
-      });
-      return;
-    }
-
-    setBusy(true);
-    setError(null);
-    setStage("queue");
-    setJob(null);
-    setDocumentName(file.name);
-    let uploadAccepted = false;
-
+  const loadMoreLibrary = async () => {
+    setLibraryLoadingMore(true);
+    setLibraryError("");
     try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("category", category.trim());
-      const uploaded = await requestJson<UploadResponse>(
-        `${API_URL}/documents`,
-        { method: "POST", body: form },
+      const documents = await requestJson<LibraryDocument[]>(
+        `${API_URL}/documents?limit=${LIBRARY_PAGE_SIZE}&offset=${library.length}`,
       );
-      uploadAccepted = true;
-      setJob(uploaded.job);
-      refreshLibrary().catch((caught: unknown) => {
-        setLibraryError(
-          caught instanceof Error
-            ? caught.message
-            : "Не удалось обновить список документов.",
-        );
-      });
-
-      let current = uploaded.job;
-      while (current.status !== "failed" && current.status !== "completed"
-        && current.status !== "awaiting_persistence") {
-        setStage(getStage(current));
-        await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
-        current = await requestJson<IngestionJob>(
-          `${API_URL}/jobs/${current.id}/status`,
-        );
-        setJob(current);
-      }
-
-      setStage(getStage(current));
-      refreshLibrary().catch((caught: unknown) => {
-        setLibraryError(
-          caught instanceof Error
-            ? caught.message
-            : "Не удалось обновить список документов.",
-        );
-      });
-      if (current.status === "failed") {
-        setError({
-          title:
-            errorStageLabels[current.error_code ?? ""] ??
-            stageLabels[current.current_step ?? ""] ??
-            "Ошибка обработки документа",
-          message:
-            current.error_message ??
-            "Задание завершилось ошибкой без дополнительного описания.",
-        });
-      }
+      setLibrary((current) => [...current, ...documents]);
+      setLibraryHasMore(documents.length === LIBRARY_PAGE_SIZE);
     } catch (caught) {
-      setStage("error");
-      setError({
-        title: uploadAccepted
-          ? "Ошибка проверки статуса задания"
-          : "Не удалось загрузить документ",
-        message:
-          caught instanceof Error
-            ? caught.message
-            : "Произошла непредвиденная ошибка.",
-      });
+      setLibraryError(
+        caught instanceof Error ? caught.message : "Не удалось загрузить документы.",
+      );
     } finally {
-      setBusy(false);
+      setLibraryLoadingMore(false);
     }
   };
 
-  const entities = job?.extraction_result?.entities ?? [];
-  const currentStepLabel = job?.current_step
-    ? stageLabels[job.current_step] ?? job.current_step
-    : "Обработка документа";
-  const completedSteps =
-    stage === "done"
-      ? 4
-      : stage === "validating"
-        ? 3
-        : stage === "extracting" || stage === "images"
-          ? 2
-          : stage === "parsing"
-            ? 1
-            : 0;
+  const askQuestion = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (asking || question.trim().length < 3) return;
+
+    setAsking(true);
+    setAnswerError("");
+    setAnswer(null);
+    try {
+      const response = await requestJson<AnswerResponse>(`${API_URL}/answers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: question.trim() }),
+      });
+      setAnswer(response);
+    } catch (caught) {
+      setAnswerError(
+        caught instanceof Error ? caught.message : "Не удалось получить ответ.",
+      );
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  const copySourcePath = async (document: LibraryDocument | AnswerCitation) => {
+    if (!document.source_path) {
+      setLibraryError("Путь к статье не настроен в конфигурации backend.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(document.source_path);
+      setCopiedDocumentId(
+        "document_id" in document ? document.document_id : document.id,
+      );
+      window.setTimeout(() => setCopiedDocumentId(""), 1800);
+    } catch {
+      setLibraryError(
+        "Браузер не разрешил копирование. Скопируйте путь вручную: " +
+          document.source_path,
+      );
+    }
+  };
 
   return (
     <main className="page-shell">
@@ -380,16 +199,88 @@ function App() {
           <span className="brand-mark"><FlaskConical size={19} strokeWidth={2.2} /></span>
           <span>NIKELPOWER</span>
         </a>
-        <span className="topbar-note">Тестирование обработки документов</span>
+        <span className="topbar-note">Личная исследовательская библиотека</span>
       </header>
 
       <section className="intro">
-        <div className="eyebrow"><span className="eyebrow-dot" /> MVP · PERSONAL RESEARCH LIBRARY</div>
+        <div className="eyebrow"><span className="eyebrow-dot" /> PERSONAL RESEARCH LIBRARY</div>
         <h1>Найдите нужное<br /><span>в своих статьях.</span></h1>
         <p>
-          Индексируйте локальные PDF-статьи, отслеживайте обработку и открывайте
-          оригиналы из собственной исследовательской библиотеки.
+          Добавляйте PDF в папку библиотеки, индексируйте их без LLM и задавайте
+          вопросы по содержимому, когда понадобится.
         </p>
+      </section>
+
+      <section className="ask-panel" aria-label="Спросить ИИ">
+        <div className="section-heading">
+          <div>
+            <span className="section-kicker">ОТВЕТЫ ПО ВАШЕЙ БИБЛИОТЕКЕ</span>
+            <h2><Sparkles size={18} /> Спросить ИИ</h2>
+          </div>
+        </div>
+        <p className="ask-description">
+          Модель запускается только после отправки вопроса. Ответ опирается на
+          найденные фрагменты и сопровождается ссылками на статьи.
+        </p>
+        <form className="ask-form" onSubmit={askQuestion}>
+          <label className="visually-hidden" htmlFor="library-question">
+            Вопрос по статьям
+          </label>
+          <textarea
+            id="library-question"
+            className="question-input"
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            maxLength={2000}
+            placeholder="Например: какие методы локализации мРНК описаны в статьях?"
+            rows={3}
+            disabled={asking}
+          />
+          <button
+            className="ask-button"
+            type="submit"
+            disabled={asking || question.trim().length < 3}
+          >
+            {asking
+              ? <><LoaderCircle className="spin" size={16} /> ИИ анализирует найденные фрагменты…</>
+              : <>Спросить <Send size={15} /></>}
+          </button>
+        </form>
+        {answerError && <p className="library-error" role="alert">{answerError}</p>}
+        {answer && (
+          <div className="answer-result" aria-live="polite">
+            <h3>Ответ</h3>
+            <p className="answer-text">{answer.answer}</p>
+            {answer.citations.length > 0 && (
+              <div className="answer-citations">
+                <h3>Источники</h3>
+                {answer.citations.map((citation) => (
+                  <article className="citation-card" key={citation.document_id}>
+                    <div className="citation-heading">
+                      <div>
+                        <strong>{citation.original_filename}</strong>
+                        <span>{citation.library_relative_path}</span>
+                      </div>
+                      <button
+                        className="path-copy-button"
+                        type="button"
+                        onClick={() => void copySourcePath(citation)}
+                      >
+                        {copiedDocumentId === citation.document_id
+                          ? <Check size={14} />
+                          : <Copy size={14} />}
+                        {copiedDocumentId === citation.document_id
+                          ? "Скопировано"
+                          : "Копировать путь"}
+                      </button>
+                    </div>
+                    <blockquote>{citation.excerpt}</blockquote>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="library-panel" aria-label="Личная библиотека статей">
@@ -404,13 +295,15 @@ function App() {
             onClick={scanLibrary}
             disabled={libraryBusy}
           >
-            {libraryBusy ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}
+            {libraryBusy
+              ? <LoaderCircle className="spin" size={15} />
+              : <RotateCcw size={15} />}
             {libraryBusy ? "Сканируем…" : "Сканировать папку"}
           </button>
         </div>
         <p className="library-description">
-          Backend читает PDF из настроенной папки и извлекает текст без вызовов LLM.
-          LLM используется только для файла, загруженного через форму ниже.
+          Поместите статью в настроенную папку и запустите сканирование. Текст
+          индексируется без обращения к модели.
         </p>
         {libraryError && <p className="library-error" role="alert">{libraryError}</p>}
         {scanSummary && (
@@ -422,7 +315,9 @@ function App() {
           </p>
         )}
         {library.length === 0 ? (
-          <p className="library-empty">Документов пока нет. Нажмите «Сканировать папку».</p>
+          <p className="library-empty">
+            Документов пока нет. Добавьте PDF в папку и нажмите «Сканировать папку».
+          </p>
         ) : (
           <ul className="library-list">
             {library.map((document) => (
@@ -430,34 +325,27 @@ function App() {
                 <FileText className="library-file-icon" size={17} />
                 <div className="library-item-info">
                   <strong>{document.original_filename}</strong>
-                  <span>
-                    {document.source_type === "library"
-                      ? document.library_relative_path
-                      : "Загружено через интерфейс"}
-                  </span>
+                  <span>{document.library_relative_path}</span>
                 </div>
-                <span className={`library-status ${document.job_status === "failed" ? "library-status-error" : ""}`}>
-                  {!document.source_available
-                    ? "Файл отсутствует"
-                    : document.job_status === "completed"
-                      ? "Текст индексирован"
-                      : document.job_status === "awaiting_persistence"
-                        ? "Извлечение завершено"
-                        : document.job_status === "failed"
-                          ? "Ошибка обработки"
-                          : document.job_status === "queued" || document.job_status === "processing"
-                            ? "Обрабатывается"
-                            : "Ожидает индексации"}
+                <span
+                  className={`library-status ${document.job_status === "failed" ? "library-status-error" : ""}`}
+                >
+                  {statusLabel(document)}
                 </span>
-                {document.source_available && (
-                  <a
-                    className="library-open-link"
-                    href={`${API_URL}/documents/${document.id}/download`}
-                    target="_blank"
-                    rel="noreferrer"
+                {document.source_available && document.source_path && (
+                  <button
+                    className="path-copy-button"
+                    type="button"
+                    onClick={() => void copySourcePath(document)}
+                    title={document.source_path}
                   >
-                    Открыть
-                  </a>
+                    {copiedDocumentId === document.id
+                      ? <Check size={14} />
+                      : <Copy size={14} />}
+                    {copiedDocumentId === document.id
+                      ? "Скопировано"
+                      : "Копировать путь"}
+                  </button>
                 )}
               </li>
             ))}
@@ -465,7 +353,7 @@ function App() {
         )}
         {libraryHasMore && (
           <button
-            className="library-scan-button"
+            className="library-scan-button load-more-button"
             type="button"
             onClick={loadMoreLibrary}
             disabled={libraryLoadingMore}
@@ -475,236 +363,9 @@ function App() {
         )}
       </section>
 
-      <section className="workspace" aria-label="Загрузка документа">
-        <div className="upload-panel">
-          <div className="section-heading">
-            <div>
-              <span className="section-kicker">ОТДЕЛЬНАЯ AI-ОБРАБОТКА</span>
-              <h2>Загрузить статью</h2>
-            </div>
-            <span className="format-badge"><FileText size={14} /> PDF · DOCX</span>
-          </div>
-
-          <form onSubmit={submitDocument}>
-            <input
-              ref={fileInput}
-              className="visually-hidden"
-              type="file"
-              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              onChange={(event) => handleFileChange(event.target.files?.[0])}
-            />
-            <button
-              className={`dropzone ${file ? "dropzone-selected" : ""}`}
-              type="button"
-              onClick={() => fileInput.current?.click()}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                handleFileChange(event.dataTransfer.files[0]);
-              }}
-              disabled={busy}
-            >
-              <span className="upload-icon">
-                {file ? <Check size={20} /> : <Upload size={20} />}
-              </span>
-              {file ? (
-                <>
-                  <span className="drop-title">{file.name}</span>
-                  <span className="drop-hint">{formatBytes(file.size)} · Нажмите, чтобы заменить файл</span>
-                </>
-              ) : (
-                <>
-                  <span className="drop-title">Перетащите PDF или DOCX сюда</span>
-                  <span className="drop-hint">или нажмите, чтобы выбрать файл</span>
-                </>
-              )}
-            </button>
-
-            <label className="field-label" htmlFor="category">Категория документа</label>
-            <input
-              id="category"
-              className="text-input"
-              type="text"
-              maxLength={100}
-              value={category}
-              onChange={(event) => setCategory(event.target.value)}
-              placeholder="Например, научная статья"
-              disabled={busy}
-            />
-
-            {error && (
-              <div className="error-box" role="alert">
-                <AlertCircle size={19} />
-                <div>
-                  <strong>{error.title}</strong>
-                  <p>{error.message}</p>
-                  {job?.error_code && (
-                    <span className="error-code">Код: {job.error_code}</span>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <button className="submit-button" type="submit" disabled={!file || busy}>
-              {busy ? (
-                <><LoaderCircle className="spin" size={18} /> Обрабатываем документ…</>
-              ) : (
-                <>Запустить AI-обработку <ChevronRight size={18} /></>
-              )}
-            </button>
-            <div className="privacy-note">
-              <CircleHelp size={14} />
-              LLM запускается только для выбранного здесь файла. Статьи из папки индексируются без LLM.
-            </div>
-          </form>
-        </div>
-
-        <div className="result-panel" aria-live="polite">
-          {!job && !busy && !error && (
-            <div className="empty-state">
-              <div className="empty-art">
-                <div className="art-card art-card-back"><span /><span /><span /></div>
-                <div className="art-card art-card-front">
-                  <span className="art-file"><FileText size={23} /></span>
-                  <span /><span /><span />
-                  <i className="art-spark spark-one" /><i className="art-spark spark-two" />
-                </div>
-              </div>
-              <h2>Здесь появится результат</h2>
-              <p>Загрузите PDF или DOCX, чтобы увидеть ход обработки и найденные сущности.</p>
-            </div>
-          )}
-
-          {(busy || job) && (
-            <div className="processing-content">
-              <div className="section-heading result-heading">
-                <div>
-                  <span className="section-kicker">ШАГ 02</span>
-                  <h2>{stage === "done" ? "Результат обработки" : "Обработка документа"}</h2>
-                </div>
-                {stage === "done" && (
-                  <span className="success-badge"><CheckCircle2 size={15} /> Готово</span>
-                )}
-              </div>
-
-              <div className="file-summary">
-                <span className="file-icon"><FileText size={18} /></span>
-                <span className="file-summary-name">{documentName || "PDF-документ"}</span>
-                {job && <span className="file-summary-status">{job.status === "failed" ? "Ошибка" : stage === "done" ? "Успешно" : "В работе"}</span>}
-              </div>
-
-              <div className="steps" aria-label="Этапы обработки">
-                {pipelineSteps.map((step, index) => {
-                  const isComplete = index < completedSteps;
-                  const isCurrent = index === completedSteps && stage !== "done" && stage !== "error";
-                  const isFailed = stage === "error" && (
-                    (index === 1 && (
-                      job?.current_step === "pdf_parsing_failed" ||
-                      job?.current_step === "docx_conversion_failed"
-                    )) ||
-                    (index === 2 &&
-                      job?.current_step !== "pdf_parsing_failed" &&
-                      job?.current_step !== "docx_conversion_failed")
-                  );
-                  return (
-                    <div className={`step ${isComplete ? "step-complete" : ""} ${isCurrent ? "step-current" : ""} ${isFailed ? "step-failed" : ""}`} key={step.id}>
-                      <span className="step-indicator">
-                        {isComplete ? <Check size={13} /> : isCurrent ? <LoaderCircle className="spin" size={14} /> : isFailed ? <AlertCircle size={14} /> : <span>{index + 1}</span>}
-                      </span>
-                      <span className="step-label">{step.label}</span>
-                      {index < pipelineSteps.length - 1 && <span className="step-connector" />}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {job && stage !== "done" && stage !== "error" && (
-                <div className="progress-area">
-                  <div className="progress-caption">
-                    <span>{currentStepLabel}</span>
-                    <span>{job.progress_percent}%</span>
-                  </div>
-                  <div className="progress-track">
-                    <span style={{ width: `${job.progress_percent}%` }} />
-                  </div>
-                </div>
-              )}
-
-              {stage === "done" && (
-                <div className="result-notice">
-                  <CheckCircle2 size={18} />
-                  <div>
-                    <strong>Текст обработан, сущности извлечены</strong>
-                    <span>Результат готов. Сохранение сущностей в граф пока не входит в этот этап.</span>
-                  </div>
-                </div>
-              )}
-
-              {job && stage === "done" && (
-                <>
-                  <div className="entities-heading">
-                    <div>
-                      <h3>Извлечённые сущности</h3>
-                      <span>{entities.length} {entities.length === 1 ? "сущность" : "сущностей"}</span>
-                    </div>
-                    <span className="entity-count">{entities.length}</span>
-                  </div>
-                  {entities.length > 0 ? (
-                    <ul className="entity-list">
-                      {entities.map((entity) => (
-                        <li className="entity-card" key={entity.id}>
-                          <div className="entity-topline">
-                            <span className={`entity-type entity-type-${entity.type.toLowerCase()}`}>
-                              {entityTypeLabels[entity.type] ?? entity.type}
-                            </span>
-                          </div>
-                          <strong className="entity-name">{entity.canonical_label}</strong>
-                          {entity.label !== entity.canonical_label && (
-                            <span className="entity-source-label">В тексте: {entity.label}</span>
-                          )}
-                          {entity.aliases.length > 0 && (
-                            <span className="entity-aliases">Также: {entity.aliases.join(", ")}</span>
-                          )}
-                          <blockquote>{entity.evidence}</blockquote>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div className="no-entities">
-                      <FileText size={19} />
-                      <span>Сущности не найдены. Документ обработан, но модель не вернула подходящих сущностей.</span>
-                    </div>
-                  )}
-                  {job.extraction_result?.unclassified_entities?.length ? (
-                    <div className="unclassified-note">
-                      Ещё не классифицировано: {job.extraction_result.unclassified_entities.map((entity) => entity.text).join(", ")}
-                    </div>
-                  ) : null}
-                  <div className="usage-note">
-                    Использовано токенов: {job.tokens_consumed.toLocaleString("ru-RU")} из {job.token_budget_limit.toLocaleString("ru-RU")}
-                  </div>
-                </>
-              )}
-
-              {stage === "error" && (
-                <div className="failure-summary">
-                  <AlertCircle size={18} />
-                  <span>{error?.title ?? "Обработка остановлена с ошибкой"}</span>
-                </div>
-              )}
-            </div>
-          )}
-          {(stage === "done" || stage === "error") && (
-            <button className="reset-button" type="button" onClick={reset}>
-              <RotateCcw size={15} /> Загрузить другой документ
-            </button>
-          )}
-        </div>
-      </section>
-
       <footer className="footer">
-        <span>© Nikelpower · Инструмент проверки pipeline</span>
-        <span><span className="footer-status-dot" /> PDF/DOCX → PDF → Docling → LLM</span>
+        <span>Личная исследовательская библиотека · on-demand AI</span>
+        <span><i className="footer-status-dot" /> Индексация без LLM</span>
       </footer>
     </main>
   );

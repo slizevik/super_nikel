@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+from app.schemas.answers import AnswerDraft
 from app.schemas.extraction import ExtractionCandidates, ImageDescription
 
 
@@ -38,6 +39,8 @@ class TokenBudgetExceeded(LLMProviderError):
 
 
 class LLMProvider(Protocol):
+    def answer_question(self, question: str, context: str) -> AnswerDraft: ...
+
     def describe_image(
         self, image: ImageInput, document_context: str
     ) -> ImageDescription: ...
