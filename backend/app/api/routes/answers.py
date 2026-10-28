@@ -2,6 +2,7 @@ import json
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import Session
 
@@ -10,6 +11,7 @@ from app.db.models import Document, IngestionJob
 from app.db.session import get_db
 from app.schemas.answers import (
     AnswerCitation,
+    AnswerDraft,
     AskQuestionRequest,
     AskQuestionResponse,
 )
@@ -27,6 +29,42 @@ from app.services.llm.factory import create_llm_provider
 router = APIRouter(prefix="/answers", tags=["answers"])
 MAX_ANSWER_SOURCES = 5
 logger = structlog.get_logger(__name__)
+
+
+def _validate_cited_sources(
+    cited_document_ids: list[str],
+    allowed_document_ids: set[str],
+) -> None:
+    if not cited_document_ids:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The language model returned no cited document IDs.",
+        )
+
+    duplicates = [
+        document_id
+        for document_id in cited_document_ids
+        if cited_document_ids.count(document_id) > 1
+    ]
+    if duplicates:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The language model repeated a cited document ID.",
+        )
+
+    bad_ids = [
+        document_id
+        for document_id in cited_document_ids
+        if document_id not in allowed_document_ids
+    ]
+    if bad_ids:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "The language model referenced a document outside the search results: "
+                f"{', '.join(sorted(bad_ids))}"
+            ),
+        )
 
 
 @router.post("", response_model=AskQuestionResponse)
@@ -105,10 +143,19 @@ def answer_library_question(
             settings,
             TokenBudget(settings.token_limit),
         )
-        answer = provider.answer_question(
+        raw_answer = provider.answer_question(
             request.question,
             json.dumps(sources, ensure_ascii=False),
         )
+        answer = raw_answer
+        if not isinstance(answer, dict):
+            answer = answer.model_dump(mode="json")
+        answer = AnswerDraft.model_validate(answer)
+    except ValidationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The language model returned an invalid answer payload.",
+        ) from error
     except LLMConfigurationError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -130,7 +177,7 @@ def answer_library_question(
         ) from error
 
     source_rows = {
-        document_id: (filename, relative_path, excerpt)
+        str(document_id): (filename, relative_path, excerpt)
         for (
             document_id,
             filename,
@@ -140,9 +187,12 @@ def answer_library_question(
             _rank,
         ) in rows
     }
+    cited_ids = [str(document_id) for document_id in answer.cited_document_ids]
+    _validate_cited_sources(cited_ids, set(source_rows.keys()))
+
     citations: list[AnswerCitation] = []
     for document_id in answer.cited_document_ids:
-        source = source_rows.get(document_id)
+        source = source_rows.get(str(document_id))
         if source is None:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,

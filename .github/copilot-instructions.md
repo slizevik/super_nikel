@@ -29,6 +29,7 @@
 - Логирование: structlog, структурированные JSON-события для stdout и файловых логов
 
 ## Работа с контекстом
+- Перед началом новой задачи прочитай последние записи в `.agent-logs`.
 - Перед написанием кода читай `docs/GLOSSARY.md` и `docs/SCHEMA_NEO4J.md`
 - Для API-эндпоинтов читай `docs/API_CONTRACTS.md`
 - Для Redis-событий читай `docs/REDIS_EVENTS.md`

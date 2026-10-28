@@ -133,3 +133,45 @@ def test_answer_library_question_rejects_unknown_citation(monkeypatch) -> None:
             FakeSession(rows),
         )
     assert error.value.status_code == 502
+
+
+def test_answer_library_question_rejects_duplicate_citations(monkeypatch) -> None:
+    document_id = uuid4()
+    rows = [
+        (
+            document_id,
+            "article.pdf",
+            "article.pdf",
+            "Article text.",
+            "Relevant excerpt.",
+            0.25,
+        )
+    ]
+
+    class FakeProvider:
+        def answer_question(self, question: str, context: str):
+            return {
+                "answer": "Repeated citation.",
+                "cited_document_ids": [str(document_id), str(document_id)],
+            }
+
+    monkeypatch.setattr(
+        answers,
+        "get_settings",
+        lambda: SimpleNamespace(
+            token_limit=100_000,
+            library_display_root=r"C:\develop\articles",
+        ),
+    )
+    monkeypatch.setattr(
+        answers,
+        "create_llm_provider",
+        lambda settings, budget: FakeProvider(),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        answers.answer_library_question(
+            AskQuestionRequest(question="What is in this article?"),
+            FakeSession(rows),
+        )
+    assert error.value.status_code == 502

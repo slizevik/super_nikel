@@ -12,6 +12,7 @@ Return JSON only, with exactly these keys:
   "cited_document_ids": ["UUID from the supplied sources"]
 }
 Use only document IDs present in the supplied context. Include at least one
-source ID when sources are supplied. Never invent a source, quote, title, or
-document ID.
+source ID when sources are supplied. If the evidence is weak or incomplete,
+state that explicitly in the answer and avoid confident claims. Never invent a
+source, quote, title, or document ID.
 """

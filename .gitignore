@@ -19,6 +19,7 @@ dist/
 build/
 node_modules/
 frontend/dist/
+artifacts/
 
 # Environment and local configuration
 .env

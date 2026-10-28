@@ -1,0 +1,6 @@
+{"event": "Started server process [66388]", "level": "info", "timestamp": "2026-10-28T17:17:17.259333Z"}
+{"event": "Waiting for application startup.", "level": "info", "timestamp": "2026-10-28T17:17:17.259333Z"}
+{"event": "Application startup complete.", "level": "info", "timestamp": "2026-10-28T17:17:17.265394Z"}
+{"event": "Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)", "level": "info", "timestamp": "2026-10-28T17:17:17.265394Z"}
+{"method": "POST", "path": "/api/v1/library/scan", "status_code": 503, "duration_ms": 16.42, "event": "http_request_completed", "request_id": "40dfe7c5-c92f-4afe-8df4-e651da030fe9", "level": "info", "timestamp": "2026-10-28T17:17:40.704374Z"}
+{"event": "127.0.0.1:58172 - \"POST /api/v1/library/scan HTTP/1.1\" 503", "level": "info", "timestamp": "2026-10-28T17:17:40.705378Z"}
