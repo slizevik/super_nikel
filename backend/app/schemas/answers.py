@@ -19,6 +19,18 @@ class AnswerDraft(StrictAnswerSchema):
         return self
 
 
+class EnglishSearchQuery(StrictAnswerSchema):
+    translated_query: str = Field(min_length=3, max_length=2000)
+
+    @field_validator("translated_query")
+    @classmethod
+    def validate_non_blank_query(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 3:
+            raise ValueError("Translated query must contain at least three characters.")
+        return normalized
+
+
 class AskQuestionRequest(StrictAnswerSchema):
     question: str = Field(min_length=3, max_length=2000)
 
@@ -42,3 +54,4 @@ class AnswerCitation(StrictAnswerSchema):
 class AskQuestionResponse(StrictAnswerSchema):
     answer: str
     citations: list[AnswerCitation]
+    translated_question: str | None = None

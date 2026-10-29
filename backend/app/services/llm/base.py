@@ -39,6 +39,8 @@ class TokenBudgetExceeded(LLMProviderError):
 
 
 class LLMProvider(Protocol):
+    def translate_question_to_english(self, question: str) -> str: ...
+
     def answer_question(self, question: str, context: str) -> AnswerDraft: ...
 
     def describe_image(

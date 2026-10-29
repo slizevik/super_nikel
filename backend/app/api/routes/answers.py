@@ -24,6 +24,7 @@ from app.services.llm.base import (
 )
 from app.services.llm.budget import TokenBudget
 from app.services.llm.factory import create_llm_provider
+from app.services.query_expansion import build_expanded_tsquery, contains_cyrillic
 
 
 router = APIRouter(prefix="/answers", tags=["answers"])
@@ -74,7 +75,44 @@ def answer_library_question(
 ) -> AskQuestionResponse:
     settings = get_settings()
     text_config = literal_column("'simple'")
-    query = func.websearch_to_tsquery(text_config, request.question)
+    translated_question = None
+    provider = None
+    token_budget = TokenBudget(settings.token_limit)
+    if contains_cyrillic(request.question):
+        try:
+            provider = create_llm_provider(settings, token_budget)
+            translated_question = provider.translate_question_to_english(
+                request.question
+            )
+        except LLMConfigurationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(error),
+            ) from error
+        except TokenBudgetExceeded as error:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=str(error),
+            ) from error
+        except LLMProviderError as error:
+            logger.warning(
+                "library_question_translation_failed",
+                error_type=error.__class__.__name__,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="The configured language model could not translate the search question.",
+            ) from error
+
+    search_question = translated_question or request.question
+    original_query = func.websearch_to_tsquery(text_config, request.question)
+    translated_query = func.websearch_to_tsquery(text_config, search_question)
+    expanded_query_text = build_expanded_tsquery(search_question)
+    expanded_query = (
+        func.to_tsquery(text_config, expanded_query_text)
+        if expanded_query_text
+        else translated_query
+    )
     search_vector = func.to_tsvector(
         text_config,
         func.coalesce(IngestionJob.extracted_text, ""),
@@ -96,20 +134,32 @@ def answer_library_question(
             func.ts_headline(
                 text_config,
                 IngestionJob.extracted_text,
-                query,
+                expanded_query,
                 "MaxWords=120, MinWords=30, MaxFragments=3, "
                 "FragmentDelimiter=' ... '",
             ),
-            func.ts_rank(search_vector, query),
+            (
+                func.ts_rank(search_vector, original_query)
+                + func.ts_rank(search_vector, translated_query)
+                + func.ts_rank(search_vector, expanded_query)
+            ),
         )
         .join(IngestionJob, IngestionJob.id == latest_job_id)
         .where(
             Document.source_type == "library",
             IngestionJob.status == "completed",
             IngestionJob.extracted_text.is_not(None),
-            search_vector.op("@@")(query),
+            search_vector.bool_op("@@")(original_query)
+            | search_vector.bool_op("@@")(translated_query)
+            | search_vector.bool_op("@@")(expanded_query),
         )
-        .order_by(func.ts_rank(search_vector, query).desc())
+        .order_by(
+            (
+                func.ts_rank(search_vector, original_query)
+                + func.ts_rank(search_vector, translated_query)
+                + func.ts_rank(search_vector, expanded_query)
+            ).desc()
+        )
         .limit(MAX_ANSWER_SOURCES)
     ).all()
 
@@ -136,13 +186,12 @@ def answer_library_question(
                 "Попробуйте другие ключевые слова или сначала просканируйте папку."
             ),
             citations=[],
+            translated_question=translated_question,
         )
 
     try:
-        provider = create_llm_provider(
-            settings,
-            TokenBudget(settings.token_limit),
-        )
+        if provider is None:
+            provider = create_llm_provider(settings, token_budget)
         raw_answer = provider.answer_question(
             request.question,
             json.dumps(sources, ensure_ascii=False),
@@ -227,4 +276,8 @@ def answer_library_question(
         "library_question_answered",
         source_count=len(citations),
     )
-    return AskQuestionResponse(answer=answer.answer, citations=citations)
+    return AskQuestionResponse(
+        answer=answer.answer,
+        citations=citations,
+        translated_question=translated_question,
+    )

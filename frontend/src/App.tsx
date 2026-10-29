@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import {
   Check,
   Copy,
+  ChevronDown,
+  ChevronRight,
   FileText,
   FlaskConical,
   LoaderCircle,
@@ -45,6 +47,13 @@ type AnswerCitation = {
 type AnswerResponse = {
   answer: string;
   citations: AnswerCitation[];
+  translated_question: string | null;
+};
+
+type ChatTurn = {
+  id: string;
+  question: string;
+  response: AnswerResponse;
 };
 
 function readableApiError(payload: unknown): string {
@@ -92,7 +101,10 @@ function App() {
   const [scanSummary, setScanSummary] = useState<LibraryScanSummary | null>(null);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
-  const [answer, setAnswer] = useState<AnswerResponse | null>(null);
+  const [chatTurns, setChatTurns] = useState<ChatTurn[]>([]);
+  const [collapsedSources, setCollapsedSources] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [answerError, setAnswerError] = useState("");
   const [copiedDocumentId, setCopiedDocumentId] = useState("");
 
@@ -156,14 +168,22 @@ function App() {
 
     setAsking(true);
     setAnswerError("");
-    setAnswer(null);
+    const submittedQuestion = question.trim();
     try {
       const response = await requestJson<AnswerResponse>(`${API_URL}/answers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: question.trim() }),
+        body: JSON.stringify({ question: submittedQuestion }),
       });
-      setAnswer(response);
+      setChatTurns((current) => [
+        ...current,
+        {
+          id: `${Date.now()}-${current.length}`,
+          question: submittedQuestion,
+          response,
+        },
+      ]);
+      setQuestion("");
     } catch (caught) {
       setAnswerError(
         caught instanceof Error ? caught.message : "Не удалось получить ответ.",
@@ -215,12 +235,26 @@ function App() {
         <div className="section-heading">
           <div>
             <span className="section-kicker">ОТВЕТЫ ПО ВАШЕЙ БИБЛИОТЕКЕ</span>
-            <h2><Sparkles size={18} /> Спросить ИИ</h2>
+            <h2><Sparkles size={18} /> Чат по статьям</h2>
           </div>
+          {chatTurns.length > 0 && (
+            <button
+              className="library-scan-button"
+              type="button"
+              onClick={() => {
+                setChatTurns([]);
+                setCollapsedSources(new Set());
+              }}
+              disabled={asking}
+            >
+              Новый диалог
+            </button>
+          )}
         </div>
         <p className="ask-description">
-          Модель запускается только после отправки вопроса. Ответ опирается на
-          найденные фрагменты и сопровождается ссылками на статьи.
+          Вопрос ищется по индексированным статьям. Русский запрос переводится
+          для поиска по англоязычному тексту, а ответ формируется на русском и
+          сопровождается источниками.
         </p>
         <form className="ask-form" onSubmit={askQuestion}>
           <label className="visually-hidden" htmlFor="library-question">
@@ -243,44 +277,91 @@ function App() {
           >
             {asking
               ? <><LoaderCircle className="spin" size={16} /> ИИ анализирует найденные фрагменты…</>
-              : <>Спросить <Send size={15} /></>}
+              : <>Отправить <Send size={15} /></>}
           </button>
         </form>
         {answerError && <p className="library-error" role="alert">{answerError}</p>}
-        {answer && (
-          <div className="answer-result" aria-live="polite">
-            <h3>Ответ</h3>
-            <p className="answer-text">{answer.answer}</p>
-            {answer.citations.length > 0 && (
-              <div className="answer-citations">
-                <h3>Источники</h3>
-                {answer.citations.map((citation) => (
-                  <article className="citation-card" key={citation.document_id}>
-                    <div className="citation-heading">
-                      <div>
-                        <strong>{citation.original_filename}</strong>
-                        <span>{citation.library_relative_path}</span>
-                      </div>
-                      <button
-                        className="path-copy-button"
-                        type="button"
-                        onClick={() => void copySourcePath(citation)}
-                      >
-                        {copiedDocumentId === citation.document_id
-                          ? <Check size={14} />
-                          : <Copy size={14} />}
-                        {copiedDocumentId === citation.document_id
-                          ? "Скопировано"
-                          : "Копировать путь"}
-                      </button>
-                    </div>
-                    <blockquote>{citation.excerpt}</blockquote>
-                  </article>
-                ))}
+        <div className="chat-history" aria-live="polite">
+          {chatTurns.length === 0 && (
+            <p className="chat-empty">
+              Например: «Какие датасеты использовались для обучения моделей?»
+            </p>
+          )}
+          {chatTurns.map(({ id, question: askedQuestion, response }) => (
+            <article className="chat-turn" key={id}>
+              <div className="chat-question">
+                <span>Вы</span>
+                <p>{askedQuestion}</p>
               </div>
-            )}
-          </div>
-        )}
+              {response.translated_question && (
+                <p className="translated-question">
+                  Поисковый запрос: {response.translated_question}
+                </p>
+              )}
+              <div className="chat-answer">
+                <span>Ответ по библиотеке</span>
+                <p className="answer-text">{response.answer}</p>
+                {response.citations.length > 0 && (
+                  <div className="answer-citations">
+                    <button
+                      className="sources-toggle"
+                      type="button"
+                      aria-expanded={!collapsedSources.has(id)}
+                      aria-controls={`sources-${id}`}
+                      onClick={() =>
+                        setCollapsedSources((current) => {
+                          const next = new Set(current);
+                          if (next.has(id)) next.delete(id);
+                          else next.add(id);
+                          return next;
+                        })
+                      }
+                    >
+                      {collapsedSources.has(id)
+                        ? <ChevronRight size={15} />
+                        : <ChevronDown size={15} />}
+                      Источники ({response.citations.length})
+                      <span>{collapsedSources.has(id) ? "Показать" : "Свернуть"}</span>
+                    </button>
+                    {!collapsedSources.has(id) && (
+                      <div className="citation-list" id={`sources-${id}`}>
+                        {response.citations.map((citation) => (
+                          <article className="citation-card" key={citation.document_id}>
+                            <div className="citation-heading">
+                              <div>
+                                <strong>{citation.original_filename}</strong>
+                                <span>{citation.library_relative_path}</span>
+                              </div>
+                              <button
+                                className="path-copy-button"
+                                type="button"
+                                onClick={() => void copySourcePath(citation)}
+                              >
+                                {copiedDocumentId === citation.document_id
+                                  ? <Check size={14} />
+                                  : <Copy size={14} />}
+                                {copiedDocumentId === citation.document_id
+                                  ? "Скопировано"
+                                  : "Копировать путь"}
+                              </button>
+                            </div>
+                            <blockquote>{citation.excerpt}</blockquote>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </article>
+          ))}
+          {asking && (
+            <p className="chat-pending" role="status">
+              <LoaderCircle className="spin" size={15} />
+              Ищу подтверждения в статьях и готовлю ответ…
+            </p>
+          )}
+        </div>
       </section>
 
       <section className="library-panel" aria-label="Личная библиотека статей">

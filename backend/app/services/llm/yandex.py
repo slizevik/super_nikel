@@ -8,14 +8,17 @@ import structlog
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.schemas.answers import AnswerDraft
+from app.schemas.answers import AnswerDraft, EnglishSearchQuery
 from app.schemas.extraction import ExtractionCandidates, ImageDescription
 from app.services.llm.base import (
     ImageInput,
     LLMConfigurationError,
     LLMResponseError,
 )
-from app.services.llm.answering import ANSWERING_INSTRUCTIONS
+from app.services.llm.answering import (
+    ANSWERING_INSTRUCTIONS,
+    QUERY_TRANSLATION_INSTRUCTIONS,
+)
 from app.services.llm.budget import TokenBudget, TokenReservation
 from app.services.llm.prompts import (
     ENTITY_EXTRACTION_INSTRUCTIONS,
@@ -62,6 +65,30 @@ class YandexGPTProvider:
         except ValidationError as error:
             raise LLMResponseError(
                 "Yandex GPT response did not match the answer schema."
+            ) from error
+
+    def translate_question_to_english(self, question: str) -> str:
+        user_content = f"User question:\n{question}"
+        response, _reservation = self._chat_completion(
+            model=self._text_model,
+            operation="translate_question",
+            messages=[
+                {"role": "system", "content": QUERY_TRANSLATION_INSTRUCTIONS},
+                {"role": "user", "content": user_content},
+            ],
+            estimated_input_tokens=TokenBudget.estimate_text_tokens(
+                QUERY_TRANSLATION_INSTRUCTIONS + user_content
+            ),
+            preferred_response_tokens=1024,
+            temperature=0.1,
+        )
+        try:
+            return EnglishSearchQuery.model_validate(
+                self._parse_json_response(response)
+            ).translated_query
+        except ValidationError as error:
+            raise LLMResponseError(
+                "Yandex GPT returned an invalid English search query."
             ) from error
 
     def describe_image(

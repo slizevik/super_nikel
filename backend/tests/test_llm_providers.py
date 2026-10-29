@@ -55,7 +55,9 @@ def test_provider_factory_selects_gigachat_without_yandex_credentials() -> None:
 
 def test_provider_factory_requires_gigachat_credentials() -> None:
     settings = Settings(
+        _env_file=None,
         database_url="postgresql+psycopg://localhost/nikelpower",
+        gigachat_credentials=None,
         llm_provider="gigachat",
     )
 
@@ -109,6 +111,33 @@ def test_llm_providers_return_validated_answers(monkeypatch, provider_kind) -> N
     assert answer.cited_document_ids[0].hex == source_id.replace("-", "")
     assert captured["operation"] == "answer_question"
     assert captured["temperature"] == 0.4
+
+
+@pytest.mark.parametrize("provider_kind", ["yandex", "gigachat"])
+def test_llm_providers_translate_search_questions(monkeypatch, provider_kind) -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://localhost/nikelpower",
+        llm_provider=provider_kind,
+        yandex_cloud_api_key="test-key",
+        yandex_cloud_folder="folder-id",
+        gigachat_credentials="authorization-key",
+    )
+    provider = create_llm_provider(settings, TokenBudget(100_000))
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"translated_query": "Which datasets are used?"}), None
+
+    monkeypatch.setattr(provider, "_chat_completion", fake_completion)
+
+    translated = provider.translate_question_to_english(
+        "Какие датасеты используются?"
+    )
+
+    assert translated == "Which datasets are used?"
+    assert captured["operation"] == "translate_question"
+    assert "Preserve scientific names" in captured["messages"][0]["content"]
 
 
 def test_gigachat_provider_exchanges_authorization_key_and_extracts_entities(

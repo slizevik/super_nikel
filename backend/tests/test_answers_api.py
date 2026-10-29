@@ -70,6 +70,57 @@ def test_answer_library_question_uses_retrieved_library_sources(monkeypatch) -> 
     assert captured_context["sources"][0]["document_id"] == str(document_id)
 
 
+def test_russian_question_is_translated_and_answered_in_russian(monkeypatch) -> None:
+    document_id = uuid4()
+    rows = [
+        (
+            document_id,
+            "dataset-study.pdf",
+            "ml/dataset-study.pdf",
+            "The model was trained using the RNALocate dataset.",
+            "The model was trained using the RNALocate dataset.",
+            0.42,
+        )
+    ]
+
+    class FakeProvider:
+        def translate_question_to_english(self, question: str) -> str:
+            assert question == "Какие датасеты использовались для обучения?"
+            return "Which datasets were used for training?"
+
+        def answer_question(self, question: str, context: str) -> AnswerDraft:
+            assert question == "Какие датасеты использовались для обучения?"
+            assert "RNALocate dataset" in context
+            return AnswerDraft(
+                answer="В статье для обучения использовался RNALocate.",
+                cited_document_ids=[document_id],
+            )
+
+    monkeypatch.setattr(
+        answers,
+        "get_settings",
+        lambda: SimpleNamespace(
+            token_limit=100_000,
+            library_root=Path("/library"),
+            library_display_root=r"C:\develop\articles",
+        ),
+    )
+    monkeypatch.setattr(
+        answers,
+        "create_llm_provider",
+        lambda settings, budget: FakeProvider(),
+    )
+
+    result = answers.answer_library_question(
+        AskQuestionRequest(question="Какие датасеты использовались для обучения?"),
+        FakeSession(rows),
+    )
+
+    assert result.translated_question == "Which datasets were used for training?"
+    assert "RNALocate" in result.answer
+    assert result.citations[0].document_id == document_id
+
+
 def test_answer_library_question_does_not_call_llm_without_search_results(
     monkeypatch,
 ) -> None:
