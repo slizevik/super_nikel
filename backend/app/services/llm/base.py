@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from app.schemas.answers import AnswerDraft
+from app.schemas.chats import ChatTitleSuggestion
 from app.schemas.extraction import ExtractionCandidates, ImageDescription
 
 
@@ -40,6 +41,8 @@ class TokenBudgetExceeded(LLMProviderError):
 
 class LLMProvider(Protocol):
     def translate_question_to_english(self, question: str) -> str: ...
+
+    def suggest_chat_title(self, question: str) -> ChatTitleSuggestion: ...
 
     def answer_question(self, question: str, context: str) -> AnswerDraft: ...
 

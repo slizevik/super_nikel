@@ -45,10 +45,15 @@ class AskQuestionRequest(StrictAnswerSchema):
 
 class AnswerCitation(StrictAnswerSchema):
     document_id: UUID
+    chunk_id: UUID
     original_filename: str
     library_relative_path: str
     source_path: str
     excerpt: str
+    page_start: int | None = None
+    page_end: int | None = None
+    heading: str | None = None
+    retrieval_score: float = Field(ge=0, le=1)
 
 
 class AskQuestionResponse(StrictAnswerSchema):

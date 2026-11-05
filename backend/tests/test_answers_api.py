@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app.api.routes import answers
 from app.schemas.answers import AnswerDraft, AskQuestionRequest
+from app.services.retrieval import RetrievedChunk
 
 
 class FakeSession:
@@ -16,6 +17,30 @@ class FakeSession:
 
     def execute(self, _statement):
         return SimpleNamespace(all=lambda: self.rows)
+
+
+@pytest.fixture(autouse=True)
+def patch_hybrid_search(monkeypatch):
+    def fake_search(session, _query, _provider, **_kwargs):
+        return [
+            RetrievedChunk(
+                document_id=row[0],
+                chunk_id=uuid4(),
+                original_filename=row[1],
+                library_relative_path=row[2],
+                content=row[3],
+                excerpt=row[4],
+                page_start=3,
+                page_end=3,
+                heading="Methods",
+                lexical_score=row[5],
+                semantic_score=row[5],
+                hybrid_score=row[5],
+            )
+            for row in session.rows
+        ]
+
+    monkeypatch.setattr(answers, "search_library", fake_search)
 
 
 def test_answer_library_question_uses_retrieved_library_sources(monkeypatch) -> None:

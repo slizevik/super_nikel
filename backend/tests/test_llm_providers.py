@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.schemas.answers import AnswerDraft
+from app.schemas.chats import ChatTitleSuggestion
 from app.schemas.extraction import (
     ExtractionCandidates,
     ExtractionResult,
@@ -138,6 +139,34 @@ def test_llm_providers_translate_search_questions(monkeypatch, provider_kind) ->
     assert translated == "Which datasets are used?"
     assert captured["operation"] == "translate_question"
     assert "Preserve scientific names" in captured["messages"][0]["content"]
+
+
+@pytest.mark.parametrize("provider_kind", ["yandex", "gigachat"])
+def test_llm_providers_suggest_chat_titles(monkeypatch, provider_kind) -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://localhost/nikelpower",
+        llm_provider=provider_kind,
+        yandex_cloud_api_key="test-key",
+        yandex_cloud_folder="folder-id",
+        gigachat_credentials="authorization-key",
+    )
+    provider = create_llm_provider(settings, TokenBudget(100_000))
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"title": "RNALocate datasets"}), None
+
+    monkeypatch.setattr(provider, "_chat_completion", fake_completion)
+
+    suggestion = provider.suggest_chat_title(
+        "Какие статьи используют набор данных RNALocate?"
+    )
+
+    assert isinstance(suggestion, ChatTitleSuggestion)
+    assert suggestion.title == "RNALocate datasets"
+    assert captured["operation"] == "suggest_chat_title"
+    assert "do not include a date" in captured["messages"][0]["content"]
 
 
 def test_gigachat_provider_exchanges_authorization_key_and_extracts_entities(

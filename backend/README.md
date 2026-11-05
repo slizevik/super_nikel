@@ -99,3 +99,18 @@ pipeline stage that persists the graph may mark it `completed`.
 
 `GET /health/live` checks that the API process is running.
 `GET /health/ready` checks PostgreSQL and Redis connectivity.
+
+## Persistent chat history
+
+The chat UI saves conversations in PostgreSQL. `GET /api/v1/chats` lists
+sessions, `POST /api/v1/chats` creates a new chat, and
+`GET /api/v1/chats/{id}` restores its messages and citations. Sending a question
+to `POST /api/v1/chats/{id}/messages` stores the question, answer, translated
+search query, and source citations. The first question generates a short topic
+title with the configured LLM; the title is prefixed with the date as
+`DD.MM.YYYY · topic`.
+
+The backend runs Alembic migrations before starting, including the migration
+that creates the chat tables. PostgreSQL data is kept in the `postgres_data`
+Docker volume, so recreating the backend or worker containers does not remove
+chat history. Do not use `docker compose down -v` if you want to preserve it.

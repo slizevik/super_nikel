@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
-from app.api.routes import answers, documents, health, jobs, library
+from app.api.routes import answers, chats, documents, health, jobs, library
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -66,4 +66,5 @@ app.include_router(jobs.router)
 app.include_router(documents.router, prefix="/api/v1")
 app.include_router(library.router, prefix="/api/v1")
 app.include_router(answers.router, prefix="/api/v1")
+app.include_router(chats.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")

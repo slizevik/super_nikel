@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.schemas.answers import AnswerDraft, EnglishSearchQuery
+from app.schemas.chats import ChatTitleSuggestion
 from app.schemas.extraction import ExtractionCandidates, ImageDescription
 from app.services.llm.base import (
     ImageInput,
@@ -19,6 +20,7 @@ from app.services.llm.base import (
 )
 from app.services.llm.answering import (
     ANSWERING_INSTRUCTIONS,
+    CHAT_TITLE_INSTRUCTIONS,
     QUERY_TRANSLATION_INSTRUCTIONS,
 )
 from app.services.llm.budget import TokenBudget, TokenReservation
@@ -102,6 +104,30 @@ class GigaChatProvider:
         except ValidationError as error:
             raise LLMResponseError(
                 "GigaChat returned an invalid English search query."
+            ) from error
+
+    def suggest_chat_title(self, question: str) -> ChatTitleSuggestion:
+        user_content = f"First user question:\n{question}"
+        response, _reservation = self._chat_completion(
+            model=self._text_model,
+            operation="suggest_chat_title",
+            messages=[
+                {"role": "system", "content": CHAT_TITLE_INSTRUCTIONS},
+                {"role": "user", "content": user_content},
+            ],
+            estimated_input_tokens=TokenBudget.estimate_text_tokens(
+                CHAT_TITLE_INSTRUCTIONS + user_content
+            ),
+            preferred_response_tokens=128,
+            temperature=0.2,
+        )
+        try:
+            return ChatTitleSuggestion.model_validate(
+                self._parse_json_response(response)
+            )
+        except ValidationError as error:
+            raise LLMResponseError(
+                "GigaChat returned an invalid chat title."
             ) from error
 
     def describe_image(

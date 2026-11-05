@@ -1,7 +1,13 @@
 from pgvector.sqlalchemy import Vector
 
 from app.db.base import Base
-from app.db.models import Document, DocumentChunk, IngestionJob
+from app.db.models import (
+    ChatMessage,
+    ChatSession,
+    Document,
+    DocumentChunk,
+    IngestionJob,
+)
 
 
 def test_document_storage_supports_pdf_and_docx() -> None:
@@ -60,6 +66,21 @@ def test_chunks_have_e5_vectors_and_search_indexes() -> None:
         for index in table.indexes
     )
     assert any(index.name == "ix_document_chunks_metadata" for index in table.indexes)
+    assert any(
+        index.name == "ix_document_chunks_content_fts" for index in table.indexes
+    )
+
+
+def test_chunks_have_source_location_metadata() -> None:
+    table = DocumentChunk.__table__
+
+    assert {"page_start", "page_end", "heading", "metadata"} <= set(
+        table.columns.keys()
+    )
+    assert table.columns["page_start"].nullable
+    assert table.columns["page_end"].nullable
+    assert table.columns["heading"].nullable
+    assert table.columns["metadata"].nullable is False
 
 
 def test_all_models_are_registered_for_migrations() -> None:
@@ -67,4 +88,27 @@ def test_all_models_are_registered_for_migrations() -> None:
         "documents",
         "ingestion_jobs",
         "document_chunks",
+        "chat_sessions",
+        "chat_messages",
     }
+
+
+def test_chat_messages_are_persisted_with_citations_and_cascade() -> None:
+    session_table = ChatSession.__table__
+    message_table = ChatMessage.__table__
+
+    assert {"title", "created_at", "updated_at"} <= set(session_table.columns.keys())
+    assert {
+        "chat_id",
+        "question",
+        "answer",
+        "translated_question",
+        "citations",
+    } <= set(message_table.columns.keys())
+    foreign_key = next(iter(message_table.foreign_keys))
+    assert foreign_key.target_fullname == "chat_sessions.id"
+    assert foreign_key.ondelete == "CASCADE"
+    assert any(
+        index.name == "ix_chat_messages_chat_created_at"
+        for index in message_table.indexes
+    )

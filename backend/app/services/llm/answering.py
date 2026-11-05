@@ -24,3 +24,10 @@ identifiers exactly. Do not answer the question or add concepts not present in
 it. Return JSON only with exactly this key:
 {"translated_query": "English search query"}
 """
+
+CHAT_TITLE_INSTRUCTIONS = """\
+Create a short, descriptive title for a research chat based only on the first
+user question. Use the same language as the question. Return a topic phrase,
+not a full sentence, and do not include a date. Return JSON only:
+{"title": "Short topic title"}
+"""

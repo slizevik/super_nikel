@@ -48,6 +48,8 @@ from app.services.document_conversion import (
     convert_docx_to_pdf,
 )
 from app.services.pdf_parser import DoclingParsingError, ParsedDocument, parse_pdf
+from app.services.chunk_indexing import replace_document_chunks
+from app.services.embeddings import EmbeddingProviderError, create_embedding_provider
 
 
 logger = structlog.get_logger(__name__)
@@ -91,6 +93,30 @@ def _parse_document(pdf_bytes: bytes) -> ParsedDocument:
     except DoclingParsingError as error:
         raise PipelineFailure(
             "PDF_PARSING_FAILED", PipelineStep.PARSING_ERROR, str(error)
+        ) from error
+
+
+def _index_chunks(session, document_id: UUID, parsed_document: ParsedDocument) -> int:
+    if not parsed_document.blocks:
+        return 0
+    settings = get_settings()
+    try:
+        provider = create_embedding_provider(settings)
+        return replace_document_chunks(
+            session,
+            document_id,
+            parsed_document.blocks,
+            provider,
+            batch_size=settings.embedding_batch_size,
+            target_tokens=settings.chunk_target_tokens,
+            max_tokens=settings.chunk_max_tokens,
+            overlap_tokens=getattr(settings, "chunk_overlap_tokens", 100),
+        )
+    except (EmbeddingProviderError, ValueError) as error:
+        raise PipelineFailure(
+            "CHUNK_INDEXING_FAILED",
+            PipelineStep.PIPELINE_ERROR,
+            str(error),
         ) from error
 
 
@@ -367,6 +393,7 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
                     image_metadata["stored_path"] = image_path
             job.extracted_text = parsed_document.markdown
             job.document_manifest = document_manifest
+            chunk_count = _index_chunks(session, document_uuid, parsed_document)
             if is_library_document:
                 complete_indexing_job(job)
                 _set_step(job, PipelineStep.INDEXED, 100)
@@ -378,6 +405,7 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
                     "library_document_indexed",
                     status=job.status,
                     character_count=len(parsed_document.markdown),
+                    chunk_count=chunk_count,
                 )
                 return
             _set_step(job, PipelineStep.DESCRIBING_IMAGES, 35)
@@ -474,4 +502,5 @@ def parse_pdf_document(document_id: str, job_id: str) -> None:
                 status=job.status,
                 entities_count=len(job.extraction_result["entities"]),
                 relationships_count=len(job.extraction_result["relationships"]),
+                chunk_count=chunk_count,
             )

@@ -3,11 +3,9 @@ import json
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
-from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.db.models import Document, IngestionJob
 from app.db.session import get_db
 from app.schemas.answers import (
     AnswerCitation,
@@ -16,6 +14,11 @@ from app.schemas.answers import (
     AskQuestionResponse,
 )
 from app.services.library_scanner import format_library_source_path
+from app.services.embeddings import (
+    EmbeddingConfigurationError,
+    EmbeddingProviderError,
+    create_embedding_provider,
+)
 from app.services.llm.base import (
     LLMConfigurationError,
     LLMProviderError,
@@ -24,7 +27,8 @@ from app.services.llm.base import (
 )
 from app.services.llm.budget import TokenBudget
 from app.services.llm.factory import create_llm_provider
-from app.services.query_expansion import build_expanded_tsquery, contains_cyrillic
+from app.services.query_expansion import contains_cyrillic
+from app.services.retrieval import RetrievedChunk, search_library
 
 
 router = APIRouter(prefix="/answers", tags=["answers"])
@@ -74,7 +78,6 @@ def answer_library_question(
     session: Session = Depends(get_db),
 ) -> AskQuestionResponse:
     settings = get_settings()
-    text_config = literal_column("'simple'")
     translated_question = None
     provider = None
     token_budget = TokenBudget(settings.token_limit)
@@ -104,80 +107,38 @@ def answer_library_question(
                 detail="The configured language model could not translate the search question.",
             ) from error
 
-    search_question = translated_question or request.question
-    original_query = func.websearch_to_tsquery(text_config, request.question)
-    translated_query = func.websearch_to_tsquery(text_config, search_question)
-    expanded_query_text = build_expanded_tsquery(search_question)
-    expanded_query = (
-        func.to_tsquery(text_config, expanded_query_text)
-        if expanded_query_text
-        else translated_query
-    )
-    search_vector = func.to_tsvector(
-        text_config,
-        func.coalesce(IngestionJob.extracted_text, ""),
-    )
-    latest_job_id = (
-        select(IngestionJob.id)
-        .where(IngestionJob.document_id == Document.id)
-        .order_by(IngestionJob.created_at.desc())
-        .limit(1)
-        .correlate(Document)
-        .scalar_subquery()
-    )
-    rows = session.execute(
-        select(
-            Document.id,
-            Document.original_filename,
-            Document.library_relative_path,
-            IngestionJob.extracted_text,
-            func.ts_headline(
-                text_config,
-                IngestionJob.extracted_text,
-                expanded_query,
-                "MaxWords=120, MinWords=30, MaxFragments=3, "
-                "FragmentDelimiter=' ... '",
-            ),
-            (
-                func.ts_rank(search_vector, original_query)
-                + func.ts_rank(search_vector, translated_query)
-                + func.ts_rank(search_vector, expanded_query)
-            ),
+    try:
+        embedding_provider = create_embedding_provider(settings)
+        retrieved_chunks = search_library(
+            session,
+            request.question,
+            embedding_provider,
+            translated_query=translated_question,
+            limit=MAX_ANSWER_SOURCES,
         )
-        .join(IngestionJob, IngestionJob.id == latest_job_id)
-        .where(
-            Document.source_type == "library",
-            IngestionJob.status == "completed",
-            IngestionJob.extracted_text.is_not(None),
-            search_vector.bool_op("@@")(original_query)
-            | search_vector.bool_op("@@")(translated_query)
-            | search_vector.bool_op("@@")(expanded_query),
-        )
-        .order_by(
-            (
-                func.ts_rank(search_vector, original_query)
-                + func.ts_rank(search_vector, translated_query)
-                + func.ts_rank(search_vector, expanded_query)
-            ).desc()
-        )
-        .limit(MAX_ANSWER_SOURCES)
-    ).all()
+    except EmbeddingConfigurationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+    except (EmbeddingProviderError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The library search could not be completed.",
+        ) from error
 
     sources = [
         {
-            "document_id": str(document_id),
-            "title": filename,
-            "excerpt": excerpt,
+            "document_id": str(chunk.document_id),
+            "chunk_id": str(chunk.chunk_id),
+            "title": chunk.original_filename,
+            "page_start": chunk.page_start,
+            "page_end": chunk.page_end,
+            "heading": chunk.heading,
+            "excerpt": chunk.excerpt,
         }
-        for (
-            document_id,
-            filename,
-            _relative_path,
-            _extracted_text,
-            excerpt,
-            _rank,
-        ) in rows
-        if excerpt and excerpt.strip()
+        for chunk in retrieved_chunks
+        if chunk.excerpt and chunk.excerpt.strip()
     ]
     if not sources:
         return AskQuestionResponse(
@@ -225,17 +186,9 @@ def answer_library_question(
             detail="The configured language model could not answer the question.",
         ) from error
 
-    source_rows = {
-        str(document_id): (filename, relative_path, excerpt)
-        for (
-            document_id,
-            filename,
-            relative_path,
-            _extracted_text,
-            excerpt,
-            _rank,
-        ) in rows
-    }
+    source_rows: dict[str, RetrievedChunk] = {}
+    for chunk in retrieved_chunks:
+        source_rows.setdefault(str(chunk.document_id), chunk)
     cited_ids = [str(document_id) for document_id in answer.cited_document_ids]
     _validate_cited_sources(cited_ids, set(source_rows.keys()))
 
@@ -247,7 +200,6 @@ def answer_library_question(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="The language model referenced a document outside the search results.",
             )
-        filename, relative_path, excerpt = source
         source_path = format_library_source_path(
             settings.library_display_root
             or (
@@ -255,7 +207,7 @@ def answer_library_question(
                 if settings.library_root is not None
                 else None
             ),
-            relative_path,
+            source.library_relative_path,
         )
         if source_path is None:
             raise HTTPException(
@@ -265,10 +217,15 @@ def answer_library_question(
         citations.append(
             AnswerCitation(
                 document_id=document_id,
-                original_filename=filename,
-                library_relative_path=relative_path,
+                chunk_id=source.chunk_id,
+                original_filename=source.original_filename,
+                library_relative_path=source.library_relative_path or "",
                 source_path=source_path,
-                excerpt=excerpt,
+                excerpt=source.excerpt,
+                page_start=source.page_start,
+                page_end=source.page_end,
+                heading=source.heading,
+                retrieval_score=source.hybrid_score,
             )
         )
 

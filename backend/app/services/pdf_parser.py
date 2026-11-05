@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -26,10 +27,20 @@ class ParsedImage:
 
 
 @dataclass(frozen=True)
+class ParsedTextBlock:
+    text: str
+    page_number: int
+    bbox: tuple[float, float, float, float] | None
+    heading: str | None
+    block_index: int
+
+
+@dataclass(frozen=True)
 class ParsedDocument:
     markdown: str
     images: list[ParsedImage]
     manifest: dict[str, Any]
+    blocks: list[ParsedTextBlock] = field(default_factory=list)
 
 
 def _text_blocks(page: Any) -> list[tuple[float, float, float, float, str]]:
@@ -89,16 +100,16 @@ def _column_gutter(
     return best_gutter
 
 
-def _ordered_page_text(page: Any) -> str:
+def _ordered_page_blocks(page: Any) -> list[tuple[float, float, float, float, str]]:
     blocks = _text_blocks(page)
     if not blocks:
-        return ""
+        return []
 
     page_width = float(page.rect.width)
     gutter = _column_gutter(blocks, page_width)
     if gutter is None:
         ordered = sorted(blocks, key=lambda block: (block[1], block[0]))
-        return "\n\n".join(block[4] for block in ordered)
+        return ordered
 
     spanning = sorted(
         (
@@ -153,7 +164,20 @@ def _ordered_page_text(page: Any) -> str:
             key=lambda block: (block[1], block[0]),
         )
     )
-    return "\n\n".join(block[4] for block in ordered)
+    return ordered
+
+
+def _ordered_page_text(page: Any) -> str:
+    return "\n\n".join(block[4] for block in _ordered_page_blocks(page))
+
+
+def _is_heading(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped or len(stripped) > 140 or "\n" in stripped:
+        return False
+    if stripped.startswith("#"):
+        return True
+    return bool(re.match(r"^(?:\d+(?:\.\d+)*\.?|[IVX]+)[.)]?\s+\S+", stripped))
 
 
 def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
@@ -166,16 +190,45 @@ def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
             pdf_path.write_bytes(pdf_bytes)
             result = DocumentConverter().convert(pdf_path)
             document = result.document
+            blocks: list[ParsedTextBlock] = []
             with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf_document:
-                markdown = "\n\n".join(
-                    page_text
-                    for page in pdf_document
-                    if (page_text := _ordered_page_text(page))
-                ).strip()
+                markdown_pages: list[str] = []
+                current_heading: str | None = None
+                block_index = 0
+                for page_number, page in enumerate(pdf_document, start=1):
+                    page_blocks = _ordered_page_blocks(page)
+                    page_text = "\n\n".join(block[4] for block in page_blocks)
+                    if page_text:
+                        markdown_pages.append(page_text)
+                    for x0, y0, x1, y1, text in page_blocks:
+                        if _is_heading(text):
+                            current_heading = text.lstrip("# ").strip()
+                        blocks.append(
+                            ParsedTextBlock(
+                                text=text,
+                                page_number=page_number,
+                                bbox=(x0, y0, x1, y1),
+                                heading=current_heading,
+                                block_index=block_index,
+                            )
+                        )
+                        block_index += 1
+                markdown = "\n\n".join(markdown_pages).strip()
             text_extractor = "pymupdf_ordered_blocks"
             if not markdown:
                 markdown = document.export_to_markdown().strip()
                 text_extractor = "docling_markdown"
+                blocks = [
+                    ParsedTextBlock(
+                        text=part.strip(),
+                        page_number=1,
+                        bbox=None,
+                        heading=(part.strip().lstrip("# ").strip() if _is_heading(part) else None),
+                        block_index=index,
+                    )
+                    for index, part in enumerate(markdown.split("\n\n"))
+                    if part.strip()
+                ]
             images: list[ParsedImage] = []
             image_manifest: list[dict[str, Any]] = []
 
@@ -256,7 +309,12 @@ def parse_pdf(pdf_bytes: bytes) -> ParsedDocument:
                 "skipped_picture_count": len(document.pictures) - len(images),
                 "images": image_manifest,
             }
-            return ParsedDocument(markdown, images, manifest)
+            return ParsedDocument(
+                markdown=markdown,
+                images=images,
+                manifest=manifest,
+                blocks=blocks,
+            )
     except DoclingParsingError:
         raise
     except Exception as error:

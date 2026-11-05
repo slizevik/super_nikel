@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.db.models import Document, IngestionJob
+from app.db.models import Document, DocumentChunk, IngestionJob
 from app.db.session import get_db
 from app.schemas.documents import LibraryScanResponse
 from app.services.library_scanner import (
@@ -43,8 +43,17 @@ def scan_document_library(
         for document in library_documents
     }
     latest_jobs: dict[str, str] = {}
+    indexed_document_ids: set[str] = set()
     document_ids = [document.id for document in library_documents]
     if document_ids:
+        indexed_document_ids = {
+            str(document_id)
+            for document_id in session.scalars(
+                select(DocumentChunk.document_id)
+                .where(DocumentChunk.document_id.in_(document_ids))
+                .distinct()
+            ).all()
+        }
         latest_jobs_subquery = (
             select(
                 IngestionJob.document_id,
@@ -87,6 +96,12 @@ def scan_document_library(
             scanned_file.sha256,
             current_job,
         )
+        if (
+            disposition == "unchanged"
+            and document is not None
+            and str(document.id) not in indexed_document_ids
+        ):
+            disposition = "retry"
         if disposition == "unchanged":
             unchanged += 1
             continue

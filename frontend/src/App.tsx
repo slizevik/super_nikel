@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Check,
   Copy,
@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Send,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
@@ -38,10 +39,15 @@ type LibraryScanSummary = {
 
 type AnswerCitation = {
   document_id: string;
+  chunk_id: string;
   original_filename: string;
   library_relative_path: string;
   source_path: string;
   excerpt: string;
+  page_start: number | null;
+  page_end: number | null;
+  heading: string | null;
+  retrieval_score: number;
 };
 
 type AnswerResponse = {
@@ -54,6 +60,29 @@ type ChatTurn = {
   id: string;
   question: string;
   response: AnswerResponse;
+};
+
+type ChatSessionSummary = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+};
+
+type ChatSessionDetail = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: Array<{
+    id: string;
+    question: string;
+    answer: string;
+    citations: AnswerCitation[];
+    translated_question: string | null;
+    created_at: string;
+  }>;
 };
 
 function readableApiError(payload: unknown): string {
@@ -101,12 +130,16 @@ function App() {
   const [scanSummary, setScanSummary] = useState<LibraryScanSummary | null>(null);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
+  const [chatsLoading, setChatsLoading] = useState(true);
+  const [chatSessions, setChatSessions] = useState<ChatSessionSummary[]>([]);
+  const [activeChatId, setActiveChatId] = useState("");
   const [chatTurns, setChatTurns] = useState<ChatTurn[]>([]);
   const [collapsedSources, setCollapsedSources] = useState<Set<string>>(
     () => new Set(),
   );
   const [answerError, setAnswerError] = useState("");
   const [copiedDocumentId, setCopiedDocumentId] = useState("");
+  const chatInitializationStarted = useRef(false);
 
   const refreshLibrary = async () => {
     const documents = await requestJson<LibraryDocument[]>(
@@ -116,12 +149,107 @@ function App() {
     setLibraryHasMore(documents.length === LIBRARY_PAGE_SIZE);
   };
 
+  const refreshChats = async () => {
+    const sessions = await requestJson<ChatSessionSummary[]>(`${API_URL}/chats`);
+    setChatSessions(sessions);
+    return sessions;
+  };
+
+  const openChat = async (chatId: string) => {
+    setChatsLoading(true);
+    setAnswerError("");
+    try {
+      const chat = await requestJson<ChatSessionDetail>(`${API_URL}/chats/${chatId}`);
+      setActiveChatId(chat.id);
+      setChatTurns(
+        chat.messages.map((message) => ({
+          id: message.id,
+          question: message.question,
+          response: {
+            answer: message.answer,
+            citations: message.citations,
+            translated_question: message.translated_question,
+          },
+        })),
+      );
+      setCollapsedSources(new Set());
+    } catch (caught) {
+      setAnswerError(
+        caught instanceof Error ? caught.message : "Не удалось открыть чат.",
+      );
+    } finally {
+      setChatsLoading(false);
+    }
+  };
+
+  const createChat = async () => {
+    setAnswerError("");
+    setChatsLoading(true);
+    try {
+      const chat = await requestJson<ChatSessionSummary>(`${API_URL}/chats`, {
+        method: "POST",
+      });
+      setChatSessions((current) => [chat, ...current]);
+      setActiveChatId(chat.id);
+      setChatTurns([]);
+      setCollapsedSources(new Set());
+      setQuestion("");
+    } catch (caught) {
+      setAnswerError(
+        caught instanceof Error ? caught.message : "Не удалось создать чат.",
+      );
+    } finally {
+      setChatsLoading(false);
+    }
+  };
+
+  const deleteChat = async (chatId: string) => {
+    setAnswerError("");
+    setChatsLoading(true);
+    try {
+      await requestJson<void>(`${API_URL}/chats/${chatId}`, { method: "DELETE" });
+      const sessions = await refreshChats();
+      if (sessions.length > 0) {
+        await openChat(sessions[0].id);
+      } else {
+        await createChat();
+      }
+    } catch (caught) {
+      setAnswerError(
+        caught instanceof Error ? caught.message : "Не удалось удалить чат.",
+      );
+      setChatsLoading(false);
+    }
+  };
+
   useEffect(() => {
     refreshLibrary().catch((caught: unknown) => {
       setLibraryError(
         caught instanceof Error ? caught.message : "Не удалось загрузить библиотеку.",
       );
     });
+  }, []);
+
+  useEffect(() => {
+    if (chatInitializationStarted.current) return;
+    chatInitializationStarted.current = true;
+
+    const initializeChats = async () => {
+      try {
+        const sessions = await refreshChats();
+        if (sessions.length > 0) {
+          await openChat(sessions[0].id);
+        } else {
+          await createChat();
+        }
+      } catch (caught) {
+        setAnswerError(
+          caught instanceof Error ? caught.message : "Не удалось загрузить чаты.",
+        );
+        setChatsLoading(false);
+      }
+    };
+    void initializeChats();
   }, []);
 
   const scanLibrary = async () => {
@@ -164,26 +292,42 @@ function App() {
 
   const askQuestion = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (asking || question.trim().length < 3) return;
+    if (asking || chatsLoading || question.trim().length < 3 || !activeChatId) return;
 
     setAsking(true);
     setAnswerError("");
     const submittedQuestion = question.trim();
     try {
-      const response = await requestJson<AnswerResponse>(`${API_URL}/answers`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: submittedQuestion }),
-      });
+      const response = await requestJson<ChatSessionDetail["messages"][number]>(
+        `${API_URL}/chats/${activeChatId}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: submittedQuestion }),
+        },
+      );
       setChatTurns((current) => [
         ...current,
         {
-          id: `${Date.now()}-${current.length}`,
-          question: submittedQuestion,
-          response,
+          id: response.id,
+          question: response.question,
+          response: {
+            answer: response.answer,
+            citations: response.citations,
+            translated_question: response.translated_question,
+          },
         },
       ]);
       setQuestion("");
+      try {
+        await refreshChats();
+      } catch (caught) {
+        setAnswerError(
+          `Ответ сохранён, но список чатов не обновился: ${
+            caught instanceof Error ? caught.message : "неизвестная ошибка"
+          }`,
+        );
+      }
     } catch (caught) {
       setAnswerError(
         caught instanceof Error ? caught.message : "Не удалось получить ответ.",
@@ -237,25 +381,48 @@ function App() {
             <span className="section-kicker">ОТВЕТЫ ПО ВАШЕЙ БИБЛИОТЕКЕ</span>
             <h2><Sparkles size={18} /> Чат по статьям</h2>
           </div>
-          {chatTurns.length > 0 && (
-            <button
-              className="library-scan-button"
-              type="button"
-              onClick={() => {
-                setChatTurns([]);
-                setCollapsedSources(new Set());
-              }}
-              disabled={asking}
-            >
-              Новый диалог
-            </button>
-          )}
+          <button
+            className="library-scan-button"
+            type="button"
+            onClick={() => void createChat()}
+            disabled={asking || chatsLoading}
+          >
+            Новый чат
+          </button>
         </div>
         <p className="ask-description">
           Вопрос ищется по индексированным статьям. Русский запрос переводится
           для поиска по англоязычному тексту, а ответ формируется на русском и
           сопровождается источниками.
         </p>
+        <div className="chat-sessions" aria-label="Сохранённые чаты">
+          {chatSessions.map((chat) => (
+            <div className="chat-session-item" key={chat.id}>
+              <button
+                className={`chat-session-button ${activeChatId === chat.id ? "chat-session-active" : ""}`}
+                type="button"
+                onClick={() => void openChat(chat.id)}
+                disabled={asking || chatsLoading}
+                aria-current={activeChatId === chat.id ? "page" : undefined}
+                title={chat.title}
+              >
+                <span>{chat.title}</span>
+                <small>{chat.message_count} сообщ.</small>
+              </button>
+              <button
+                className="chat-delete-button"
+                type="button"
+                onClick={() => void deleteChat(chat.id)}
+                disabled={asking || chatsLoading}
+                aria-label={`Удалить чат: ${chat.title}`}
+                title="Удалить чат"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+          {chatsLoading && <span className="chat-loading-label">Загружаю чаты…</span>}
+        </div>
         <form className="ask-form" onSubmit={askQuestion}>
           <label className="visually-hidden" htmlFor="library-question">
             Вопрос по статьям
@@ -268,12 +435,12 @@ function App() {
             maxLength={2000}
             placeholder="Например: какие методы локализации мРНК описаны в статьях?"
             rows={3}
-            disabled={asking}
+            disabled={asking || chatsLoading || !activeChatId}
           />
           <button
             className="ask-button"
             type="submit"
-            disabled={asking || question.trim().length < 3}
+            disabled={asking || chatsLoading || !activeChatId || question.trim().length < 3}
           >
             {asking
               ? <><LoaderCircle className="spin" size={16} /> ИИ анализирует найденные фрагменты…</>
@@ -287,7 +454,7 @@ function App() {
               Например: «Какие датасеты использовались для обучения моделей?»
             </p>
           )}
-          {chatTurns.map(({ id, question: askedQuestion, response }) => (
+          {[...chatTurns].reverse().map(({ id, question: askedQuestion, response }) => (
             <article className="chat-turn" key={id}>
               <div className="chat-question">
                 <span>Вы</span>
@@ -331,6 +498,14 @@ function App() {
                               <div>
                                 <strong>{citation.original_filename}</strong>
                                 <span>{citation.library_relative_path}</span>
+                                {(citation.page_start || citation.page_end || citation.heading) && (
+                                  <small>
+                                    {citation.heading && `${citation.heading} · `}
+                                    {citation.page_start === citation.page_end
+                                      ? `стр. ${citation.page_start}`
+                                      : `стр. ${citation.page_start}–${citation.page_end}`}
+                                  </small>
+                                )}
                               </div>
                               <button
                                 className="path-copy-button"

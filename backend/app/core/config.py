@@ -37,8 +37,10 @@ class Settings(BaseSettings):
     gigachat_max_output_tokens: int = Field(default=8192, gt=0)
     llm_request_timeout_seconds: float = Field(default=120, gt=0)
     entity_min_occurrences: int = Field(default=2, ge=1)
-    yandex_embedding_model: str = "emb/latest"
-    embedding_dimensions: int = Field(default=256, gt=0)
+    embedding_provider: str = "fake"
+    embedding_model: str = "emb/latest"
+    embedding_dimensions: int = Field(default=1024, gt=0)
+    embedding_batch_size: int = Field(default=32, gt=0)
     embedding_similarity_threshold: float = Field(default=0.82, ge=0, le=1)
     dictionary_context_top_k: int = Field(default=15, gt=0)
     token_limit: int = Field(default=1_000_000, gt=0)
