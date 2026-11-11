@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     embedding_model: str = "emb/latest"
     embedding_dimensions: int = Field(default=1024, gt=0)
     embedding_batch_size: int = Field(default=32, gt=0)
+    yandex_embedding_model: str = "text-search-doc"
+    yandex_embedding_base_url: str = "https://llm.api.cloud.yandex.net"
     embedding_similarity_threshold: float = Field(default=0.82, ge=0, le=1)
     dictionary_context_top_k: int = Field(default=15, gt=0)
     token_limit: int = Field(default=1_000_000, gt=0)

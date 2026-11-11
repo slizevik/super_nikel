@@ -225,3 +225,14 @@ hybrid_score = 0.45 * lexical_score + 0.55 * semantic_score
 - необходимость reranker;
 - приоритетные metadata-фильтры;
 - массовая переиндексация без блокировки библиотеки.
+
+## Следующий инкремент: Yandex embedding provider
+
+Реализовать отдельный `YandexEmbeddingProvider` и подключить его через
+`create_embedding_provider()`. Провайдер должен отправлять текст в Yandex
+Cloud Text Embeddings API, передавать `Api-Key` и `modelUri`, проверять HTTP-
+статус, JSON-формат ответа и размерность вектора. Для `embed_documents()`
+сохранить общий provider-neutral контракт, выполняя запросы для каждого текста.
+Добавить настройки модели и endpoint, тесты успешного ответа, ошибок API и
+неверной размерности. После проверки можно переключить `EMBEDDING_PROVIDER`
+с `fake` на `yandex` и выполнить переиндексацию chunks.

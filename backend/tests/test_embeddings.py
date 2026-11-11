@@ -7,6 +7,7 @@ from app.services.embeddings import (
     EmbeddingConfigurationError,
     EmbeddingResponseError,
     FakeEmbeddingProvider,
+    YandexEmbeddingProvider,
     create_embedding_provider,
     validate_embedding,
     validate_embeddings,
@@ -64,3 +65,80 @@ def test_provider_factory_rejects_unknown_provider() -> None:
                 embedding_dimensions=6,
             )
         )
+
+
+def test_yandex_provider_calls_embedding_api_and_validates_response(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        is_error = False
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"embedding": [0.1, 0.2, 0.3]}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr("app.services.embeddings.httpx.post", fake_post)
+    provider = YandexEmbeddingProvider(
+        SimpleNamespace(
+            yandex_cloud_api_key="api-key",
+            yandex_cloud_folder="folder-id",
+            yandex_embedding_model="text-search-doc",
+            yandex_embedding_base_url="https://example.test",
+            embedding_dimensions=3,
+            llm_request_timeout_seconds=10,
+        )
+    )
+
+    assert provider.embed_query("RNA localization") == [0.1, 0.2, 0.3]
+    assert captured["url"] == (
+        "https://example.test/foundationModels/v1/textEmbedding"
+    )
+    assert captured["headers"]["Authorization"] == "Api-Key api-key"
+    assert captured["json"] == {
+        "modelUri": "emb://folder-id/text-search-doc",
+        "text": "RNA localization",
+    }
+
+
+def test_embedding_factory_selects_yandex_provider() -> None:
+    provider = create_embedding_provider(
+        SimpleNamespace(
+            embedding_provider="yandex",
+            yandex_cloud_api_key="api-key",
+            yandex_cloud_folder="folder-id",
+            yandex_embedding_model="text-search-doc",
+            yandex_embedding_base_url="https://example.test",
+            embedding_dimensions=3,
+            llm_request_timeout_seconds=10,
+        )
+    )
+
+    assert isinstance(provider, YandexEmbeddingProvider)
+
+
+def test_yandex_provider_rejects_invalid_response_shape(monkeypatch) -> None:
+    class Response:
+        is_error = False
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"embedding": [0.1]}
+
+    monkeypatch.setattr("app.services.embeddings.httpx.post", lambda *args, **kwargs: Response())
+    provider = YandexEmbeddingProvider(
+        SimpleNamespace(
+            yandex_cloud_api_key="api-key",
+            yandex_cloud_folder="folder-id",
+            embedding_dimensions=3,
+        )
+    )
+
+    with pytest.raises(EmbeddingResponseError, match="expected 3"):
+        provider.embed_query("text")
